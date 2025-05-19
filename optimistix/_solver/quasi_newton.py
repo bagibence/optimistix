@@ -373,6 +373,8 @@ class AbstractQuasiNewton(
             state.y_eval,
             state.f_info,
             FunctionInfo.Eval(f_eval),
+            lin_fn,
+            options,
             state.search_state,
         )
 

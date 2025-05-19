@@ -345,6 +345,8 @@ class AbstractSearch(eqx.Module, Generic[Y, _FnInfo, _FnEvalInfo, SearchState]):
         y_eval: Y,
         f_info: _FnInfo,
         f_eval_info: _FnEvalInfo,
+        lin_fn,
+        options,
         state: SearchState,
     ) -> tuple[Scalar, Bool[Array, ""], RESULTS, SearchState]:
         """Performs a step within a search. For example, one step within a line search.
@@ -363,7 +365,7 @@ class AbstractSearch(eqx.Module, Generic[Y, _FnInfo, _FnEvalInfo, SearchState]):
         - `f_info`: An [`optimistix.FunctionInfo`][] describing information about `f`
             evaluated at `y`, the gradient of `f` at `y`, etc.
         - `f_eval_info`: An [`optimistix.FunctionInfo`][] describing information about
-            `f` evaluated at `y`, the gradient of `f` at `y`, etc.
+            `f` evaluated at `y_eval`, the gradient of `f` at `y_eval`, etc.
         - `state`: the evolving state of the repeated searches.
 
         **Returns:**

@@ -28,8 +28,11 @@ class LearningRate(AbstractSearch[Y, FunctionInfo, FunctionInfo, None]):
         y_eval: Y,
         f_info: FunctionInfo,
         f_eval_info: FunctionInfo,
+        lin_fn,
+        options,
         state: None,
     ) -> tuple[Scalar, Bool[Array, ""], RESULTS, None]:
+        del lin_fn, options
         del first_step, y, y_eval, f_info, f_eval_info, state
         learning_rate = cast(Array, self.learning_rate)
         return learning_rate, jnp.array(True), RESULTS.successful, None
