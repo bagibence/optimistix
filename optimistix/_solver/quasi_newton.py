@@ -134,8 +134,7 @@ class _AbstractBFGSDFPUpdate(AbstractQuasiNewtonUpdate):
         grad_diff: PyTree,
         y_diff: PyTree,
         f_info: FunctionInfo.EvalGradHessian | FunctionInfo.EvalGradHessianInv,
-    ) -> lx.PyTreeLinearOperator:
-        ...
+    ) -> lx.PyTreeLinearOperator: ...
 
     def __call__(
         self,
