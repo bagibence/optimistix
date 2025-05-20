@@ -30,6 +30,7 @@ from .._search import (
 from .._solution import RESULTS
 from .backtracking import BacktrackingArmijo
 from .gauss_newton import NewtonDescent
+from .zoom import Zoom
 
 
 v_tree_dot = jax.vmap(tree_dot, in_axes=(0, None), out_axes=0)
@@ -1289,7 +1290,7 @@ class LBFGS(AbstractQuasiNewton[Y, Aux, _Hessian], strict=True):
     atol: float
     norm: Callable[[PyTree], Scalar]
     descent: NewtonDescent
-    search: BacktrackingArmijo
+    search: AbstractSearch
     hessian_update: AbstractQuasiNewtonUpdate
     verbose: frozenset[str]
 
@@ -1300,13 +1301,14 @@ class LBFGS(AbstractQuasiNewton[Y, Aux, _Hessian], strict=True):
         norm: Callable[[PyTree], Scalar] = max_norm,
         use_inverse: bool = True,
         history_length: int = 10,
+        search: AbstractSearch = Zoom(),
         verbose: frozenset[str] = frozenset(),
     ):
         self.rtol = rtol
         self.atol = atol
         self.norm = norm
         self.descent = NewtonDescent()
-        self.search = BacktrackingArmijo()
+        self.search = search
         self.hessian_update = LBFGSUpdate(
             use_inverse=use_inverse, history_length=history_length
         )
