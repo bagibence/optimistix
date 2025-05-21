@@ -8,7 +8,7 @@ from jaxtyping import Array, Bool, Float, Int, Scalar
 
 from .._custom_types import Y
 from .._misc import lin_to_grad, tree_dot, tree_full_like
-from .._search import _FnEvalInfo, _FnInfo
+from .._search import _FnEvalInfo, _FnInfo, AbstractSearch
 from .._solution import RESULTS
 
 
@@ -186,7 +186,7 @@ class ZoomState(eqx.Module):
     proposed_stepsize: FloatScalar
 
 
-class Zoom(eqx.Module):
+class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
     c1: float = 1e-4
     c2: float = 0.9
     max_stepsize: float = 1.0
