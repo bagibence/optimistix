@@ -16,9 +16,8 @@ IntScalar = Int[Scalar, ""]
 FloatScalar = Float[Scalar, ""]
 
 
-# from optax
 def _cond_print(condition, message, **kwargs):
-    """Prints message if condition is true."""
+    """Prints message if condition is true. From Optax."""
     jax.lax.cond(
         condition,
         lambda _: jax.debug.print(message, **kwargs, ordered=True),
@@ -27,35 +26,51 @@ def _cond_print(condition, message, **kwargs):
     )
 
 
-def quadratic_min(a, val_a, grad_a, b, val_b):
+def quadratic_min(
+    a: float, value_a: float, slope_a: float, b: float, value_b: float
+) -> float:
+    """
+    Quadratic interpolation.
+
+    Find the minimum of the curve fitted to (a, value_a) and (b, value_b)
+    """
     dist = b - a
-    upper = -grad_a * dist**2
-    lower = 2 * (val_b - val_a - grad_a * dist)
+    upper = -slope_a * dist**2
+    lower = 2 * (value_b - value_a - slope_a * dist)
     return a + upper / lower
 
 
-def optax_cubicmin(a, fa, fpa, b, fb, c, fc):
-    """Cubic interpolation.
+def optax_cubicmin(
+    a: FloatScalar,
+    value_a: FloatScalar,
+    slope_a: FloatScalar,
+    b: FloatScalar,
+    value_b: FloatScalar,
+    c: FloatScalar,
+    value_c: FloatScalar,
+) -> FloatScalar:
+    """
+    Cubic interpolation. Adapted from Optax.
 
     Finds a critical point of a cubic polynomial
     p(x) = A *(x-a)^3 + B*(x-a)^2 + C*(x-a) + D, that goes through
-    the points (a,fa), (b,fb), and (c,fc) with derivative at a of fpa.
+    the points (a,value_a), (b,value_b), and (c,value_c) with derivative at a of slope_a.
     May return NaN (if radical<0), in that case, the point will be ignored.
     Adapted from scipy.optimize._linesearch.py.
 
     Args:
       a: scalar
-      fa: value of a function f at a
-      fpa: slope of a function f at a
+      value_a: value of a function f at a
+      slope_a: slope of a function f at a
       b: scalar
-      fb: value of a function f at b
+      value_b: value of a function f at b
       c: scalar
-      fc: value of a function f at c
+      value_c: value of a function f at c
 
     Returns:
       xmin: point at which p'(xmin) = 0
     """
-    C = fpa
+    C = slope_a
     db = b - a
     dc = c - a
     denom = (db * dc) ** 2 * (db - dc)
@@ -63,7 +78,7 @@ def optax_cubicmin(a, fa, fpa, b, fb, c, fc):
     A, B = (
         jnp.dot(
             d1,
-            jnp.array([fb - fa - C * db, fc - fa - C * dc]),
+            jnp.array([value_b - value_a - C * db, value_c - value_a - C * dc]),
             precision=jax.lax.Precision.HIGHEST,
         )
         / denom
@@ -75,9 +90,18 @@ def optax_cubicmin(a, fa, fpa, b, fb, c, fc):
     return xmin
 
 
-def interpolate(lo, value_lo, slope_lo, hi, value_hi, cubic_ref, value_cubic_ref):
+def interpolate(
+    lo: FloatScalar,
+    value_lo: FloatScalar,
+    slope_lo: FloatScalar,
+    hi: FloatScalar,
+    value_hi: FloatScalar,
+    cubic_ref: FloatScalar,
+    value_cubic_ref: FloatScalar,
+) -> FloatScalar:
     """
-    Find
+    Find a stepsize by minimizing the cubic or quadratic curve fitted to
+    `lo`, `hi`, and `cubic_ref`.
     """
     # Check if interval not too small otherwise fail
     # adapted from optax
@@ -133,11 +157,20 @@ def decrease_condition_with_approx(
     return decrease_error <= 0.0
 
 
-def decrease_condition(stepsize_i, value_a_i, value_init, slope_init, c1):
+def decrease_condition(
+    stepsize_i: FloatScalar,
+    value_a_i: FloatScalar,
+    value_init: FloatScalar,
+    slope_init: FloatScalar,
+    c1: float,
+) -> Bool:
+    """
+    Check whether stepsize_i satisfies the Armijo decrease condition.
+    """
     return value_a_i <= value_init + c1 * stepsize_i * slope_init
 
 
-def curvature_condition(slope_a_i, slope_init, c2):
+def curvature_condition(slope_a_i: FloatScalar, slope_init: FloatScalar, c2: float):
     return jnp.abs(slope_a_i) <= c2 * jnp.abs(slope_init)
 
 
@@ -229,13 +262,18 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
     # TODO decide on defaults
 
     @staticmethod
-    def _try_replace_stepsize_with_safe(state):
-        # NOTE this doesn't replace the slope
+    def _try_replace_stepsize_with_safe(state: ZoomState):
+        """
+        If the search failed, replace the stepsize stored in `state` with
+        the safe stepsize.
+        """
         final_stepsize, final_point = tree_where(
             (state.safe_stepsize > 0.0),
             [state.safe_stepsize, state.safe_point],
             [state.stepsize, state.current_point],
         )
+        # TODO why not just store this in the state as safe_slope?
+        # recalculate the final slope for consistency
         final_slope = final_point.compute_grad_dot(state.descent_direction)
         state = eqx.tree_at(
             lambda s: (s.stepsize, s.current_point, s.current_slope),
@@ -245,13 +283,23 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
 
         return state
 
-    def init_stepsize_from_previous(
-        self,
-        prev_stepsize,
-    ):
+    def init_stepsize_from_previous(self, prev_stepsize: FloatScalar) -> FloatScalar:
+        """
+        Initialize the linesearch's stepsize based on the previous steps size
+        according to one of three strategies:
+            - "one": initialize to 1.0. Recommended for quasi-Newton methods.
+            - "keep": initialize to and start from the previous stepsize.
+            - "increase": increase the previous stepsize by `increase_factor`.
+
+        If the initial stepsize would be smaller than the smallest allowed stepsize
+        (`min_stepsize`), reset it to `max_stepsize`.
+
+        If the initial stepsize would be larger than the largest allowed stepsize
+        (`max_stepsize`), clip it to `max_stepsize`.
+        """
         match self.initial_guess_strategy:
             case "one":
-                a_i = 1.0
+                a_i = jnp.array(1.0)
             case "keep":
                 a_i = prev_stepsize
             case "increase":
@@ -266,9 +314,14 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         # guard from above by max_stepsize
         a_i = jnp.minimum(a_i, self.max_stepsize)
 
-        return jnp.array(a_i)
+        return a_i
 
-    def _actual_init(self, init_point, prev_ls_stepsize, y_eval):
+    def _actual_init(
+        self,
+        init_point: PointEvalGrad,
+        prev_ls_stepsize: FloatScalar,
+        y_eval: PointEval,
+    ) -> ZoomState:
         # init_point is where stepsize = 0
         # currently y_eval is with a stepsize of 1.0
         descent_direction = tree_sub(y_eval, init_point.location)
@@ -308,7 +361,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             descent_direction=descent_direction,
         )
 
-    def init(self, y, f_info_struct):
+    def init(self, y, f_info_struct) -> ZoomState:
         if self.verbose:
             jax.debug.print("Doing empty init")
 
@@ -349,7 +402,10 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             descent_direction=tree_full_like(y, 0.0),
         )
 
-    def _propose_by_interpolation(self, state):
+    def _propose_by_interpolation(self, state: ZoomState) -> FloatScalar:
+        """
+        Propose a stepsize by interpolation, fitting a curve to lo, hi, cubic_ref.
+        """
         stepsize_middle = interpolate(
             state.stepsize_lo,
             state.point_lo.value,
@@ -361,11 +417,17 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         )
         return stepsize_middle
 
-    def _propose_by_increase(self, state):
-        # propose a stepsize
-        # on the first step of the current search use the one that was initialized using the previous search's stepsize
-        #   which is one of: previous step's final stepsize; that increased by increased factor; 1.0
-        # on all other iterations, increase by increase_factor
+    def _propose_by_increase(self, state: ZoomState) -> FloatScalar:
+        """
+        Propose a stepsize by either increasing the previous stepsize or resetting.
+
+        On the first step of the current search use the initial stepsize guess which was
+        made based on the previous search's final stepsize.
+        See `Zoom.init_stepsize_from_previous`
+        On all other iterations, increase by `increase_factor`.
+
+        In all cases, limit from above by the maximum allowed stepsize.
+        """
         new_stepsize = jnp.where(
             state.ls_iter_num == 0,
             state.init_stepsize_guess,
@@ -376,7 +438,13 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
 
         return new_stepsize
 
-    def propose_stepsize(self, state):
+    def propose_stepsize(self, state: ZoomState) -> FloatScalar:
+        """
+        Propose a stepsize in a way that depends on which stage of the zoom linesearch
+        we are at.
+        If the interval is found and we are zooming into it: interpolate.
+        If the interval is not found yet: increase.
+        """
         return jax.lax.cond(
             state.interval_found,
             self._propose_by_interpolation,
