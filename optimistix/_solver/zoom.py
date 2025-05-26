@@ -80,13 +80,12 @@ def interpolate(lo, value_lo, slope_lo, hi, value_hi, cubic_ref, value_cubic_ref
     Find
     """
     # Check if interval not too small otherwise fail
+    # adapted from optax
     delta = jnp.abs(hi - lo)
     left = jnp.minimum(hi, lo)
     right = jnp.maximum(hi, lo)
     cubic_chk = 0.2 * delta  # cubic guess has to be at least this far from the sides
     quad_chk = 0.1 * delta  # quadratic guess has to be at least this far from the sides
-
-    # too_small_int = delta <= min_interval_length
 
     middle_cubic = optax_cubicmin(
         lo, value_lo, slope_lo, hi, value_hi, cubic_ref, value_cubic_ref
@@ -104,7 +103,34 @@ def interpolate(lo, value_lo, slope_lo, hi, value_hi, cubic_ref, value_cubic_ref
     a_j = jnp.where(middle_quad_valid, middle_quad, a_j)
     a_j = jnp.where(middle_cubic_valid, middle_cubic, a_j)
 
+    jax.debug.print(
+        "lo {}, value_lo {}, slope_lo {}, hi {}, value_hi {}, cubic_ref {}, value_cubic_ref {}",
+        lo,
+        value_lo,
+        slope_lo,
+        hi,
+        value_hi,
+        cubic_ref,
+        value_cubic_ref,
+    )
+    jax.debug.print("{}, {}", middle_cubic, middle_quad)
+
     return a_j
+
+
+def decrease_condition_with_approx(
+    stepsize, value_step, slope_step, value_init, slope_init, c1, c3
+):
+    # adopted from jaxopt and optax
+    decrease_error = value_step - value_init - c1 * stepsize * slope_init
+    if c3 is not None:
+        approx_decrease_error = slope_step - (2 * c1 - 1.0) * slope_init
+
+        delta_values = value_step - value_init - c3 * jnp.abs(value_init)
+        approx_decrease_error = jnp.maximum(approx_decrease_error, delta_values)
+        decrease_error = jnp.minimum(approx_decrease_error, decrease_error)
+
+    return decrease_error <= 0.0
 
 
 def decrease_condition(stepsize_i, value_a_i, value_init, slope_init, c1):
@@ -164,8 +190,8 @@ class ZoomState(eqx.Module):
     slope_init: FloatScalar
     #
     stepsize: FloatScalar
-    point_i: PointEvalGrad
-    slope_i: FloatScalar
+    current_point: PointEvalGrad
+    current_slope: FloatScalar
     #
     interval_found: Bool
     done: Bool
@@ -183,16 +209,20 @@ class ZoomState(eqx.Module):
     safe_stepsize: FloatScalar
     safe_point: PointEvalGrad
     #
-    proposed_stepsize: FloatScalar
+    y_eval_stepsize: FloatScalar
+    #
+    descent_direction: jax.Array
 
 
 class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
     c1: float = 1e-4
     c2: float = 0.9
+    c3: float = 1e-6
     max_stepsize: float = 1.0
     increase_factor: float = 1.5
     initial_guess_strategy: str = "keep"
     min_interval_length: float = 1e-6
+    min_stepsize: float = 1e-6
     maxls: int = 30
     verbose: bool = False
 
@@ -204,17 +234,18 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         final_stepsize, final_point = tree_where(
             (state.safe_stepsize > 0.0),
             [state.safe_stepsize, state.safe_point],
-            [state.stepsize, state.point_i],
+            [state.stepsize, state.current_point],
         )
+        final_slope = final_point.compute_grad_dot(state.descent_direction)
         state = eqx.tree_at(
-            lambda s: (s.stepsize, s.point_i),
+            lambda s: (s.stepsize, s.current_point, s.current_slope),
             state,
-            (final_stepsize, final_point),
+            (final_stepsize, final_point, final_slope),
         )
 
         return state
 
-    def _init_stepsize(
+    def init_stepsize_from_previous(
         self,
         prev_stepsize,
     ):
@@ -230,16 +261,20 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
                     "initial_guess_strategy has to one of ('one', 'keep', 'increase')"
                 )
 
-        a_i = jnp.where(a_i < self.min_interval_length, self.max_stepsize, a_i)
+        # reset if too small
+        a_i = jnp.where(a_i <= self.min_stepsize, self.max_stepsize, a_i)
+        # guard from above by max_stepsize
         a_i = jnp.minimum(a_i, self.max_stepsize)
 
         return jnp.array(a_i)
 
-    def _actual_init(self, init_point, prev_ls_stepsize, descent_direction):
+    def _actual_init(self, init_point, prev_ls_stepsize, y_eval):
         # init_point is where stepsize = 0
+        # currently y_eval is with a stepsize of 1.0
+        descent_direction = tree_sub(y_eval, init_point.location)
         _slope_init = init_point.compute_grad_dot(descent_direction)
 
-        init_stepsize = self._init_stepsize(prev_ls_stepsize)
+        init_stepsize = self.init_stepsize_from_previous(prev_ls_stepsize)
         proposed_stepsize = init_stepsize
 
         return ZoomState(
@@ -249,8 +284,8 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             slope_init=_slope_init,
             #
             stepsize=jnp.array(0.0),
-            point_i=init_point,
-            slope_i=_slope_init,
+            current_point=init_point,
+            current_slope=_slope_init,
             #
             interval_found=jnp.array(False),
             done=jnp.array(False),
@@ -268,7 +303,9 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             safe_stepsize=jnp.array(0.0),
             safe_point=init_point,
             #
-            proposed_stepsize=proposed_stepsize,
+            y_eval_stepsize=proposed_stepsize,
+            #
+            descent_direction=descent_direction,
         )
 
     def init(self, y, f_info_struct):
@@ -288,8 +325,8 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             slope_init=_slope_init,
             #
             stepsize=jnp.array(0.0),
-            point_i=init_point,
-            slope_i=_slope_init,
+            current_point=init_point,
+            current_slope=_slope_init,
             #
             interval_found=jnp.array(False),
             done=jnp.array(False),
@@ -307,7 +344,9 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             safe_stepsize=jnp.array(0.0),
             safe_point=init_point,
             #
-            proposed_stepsize=jnp.array(0.0),
+            y_eval_stepsize=jnp.array(0.0),
+            #
+            descent_direction=tree_full_like(y, 0.0),
         )
 
     def _propose_by_interpolation(self, state):
@@ -327,21 +366,15 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         # on the first step of the current search use the one that was initialized using the previous search's stepsize
         #   which is one of: previous step's final stepsize; that increased by increased factor; 1.0
         # on all other iterations, increase by increase_factor
-        stepsize_i = jnp.where(
+        new_stepsize = jnp.where(
             state.ls_iter_num == 0,
             state.init_stepsize_guess,
             state.stepsize * self.increase_factor,
         )
         # guard from above by max stepsize
-        stepsize_i = jnp.minimum(stepsize_i, self.max_stepsize)
-        reached_max_stepsize = stepsize_i >= self.max_stepsize
+        new_stepsize = jnp.minimum(new_stepsize, self.max_stepsize)
 
-        # TODO reached_max_stepsize has to be documented in the state
-
-        return stepsize_i
-
-    def _propose_on_first_iter(self, state):
-        return self._init_stepsize(state.stepsize)
+        return new_stepsize
 
     def propose_stepsize(self, state):
         return jax.lax.cond(
@@ -367,13 +400,24 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
 
         # TODO is state.stepsize always the last accepted step?
 
-        # y_eval was created by taking state.proposed_stepsize
-        stepsize_middle = state.proposed_stepsize
+        # y_eval was created by taking state.y_eval_stepsize
+        stepsize_middle = state.y_eval_stepsize
         point_middle = PointEvalGrad(y_eval, f_eval_info.f, y_eval_grad)
         slope_middle = point_middle.compute_grad_dot(descent_direction)
+        jax.debug.print("descent_direction for slope_middle: {}", descent_direction)
+        jax.debug.print("slope_middle: {}", slope_middle)
 
-        middle_satisf_decrease = decrease_condition(
-            stepsize_middle, point_middle.value, value_init, state.slope_init, self.c1
+        # middle_satisf_decrease = decrease_condition(
+        #    stepsize_middle, point_middle.value, value_init, state.slope_init, self.c1
+        # )
+        middle_satisf_decrease = decrease_condition_with_approx(
+            stepsize_middle,
+            point_middle.value,
+            slope_middle,
+            value_init,
+            state.slope_init,
+            self.c1,
+            self.c3,
         )
         middle_satisf_curvature = curvature_condition(
             slope_middle, state.slope_init, self.c2
@@ -391,8 +435,12 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         # or its value is worse than the previous best value that satisfies it
         middle_better_than_lo = point_middle.value < value_lo
 
+        # TODO decide which one to use: largest step or best function value
+        # update_safe_stepsize = middle_satisf_decrease & (
+        #    point_middle.value < state.safe_point.value
+        # )
         update_safe_stepsize = middle_satisf_decrease & (
-            point_middle.value < state.safe_point.value
+            stepsize_middle > state.safe_stepsize
         )
         new_safe_stepsize, new_safe_point = tree_where(
             update_safe_stepsize,
@@ -415,26 +463,15 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             # & ~middle_slope_satisf_third_cond
         )
 
-        set_cubic_to_hi_1 = ~(middle_satisf_decrease & middle_better_than_lo)
-        set_cubic_to_hi = set_cubic_to_hi_1 | middle_slope_satisf_third_cond
-        # same as set_hi_to_middle or set_lo_to_middle?
-
         new_stepsize_hi, new_point_hi = tree_where(
             set_hi_to_middle,
             (stepsize_middle, point_middle.strip_grad()),
             (stepsize_hi, state.point_hi),
         )
 
-        # update the reference point
-        new_cubic_ref, new_cubic_ref_point = tree_where(
-            set_cubic_to_hi,
-            (stepsize_hi, state.point_hi),
-            (stepsize_lo, PointEval(state.point_lo.location, state.point_lo.value)),
-        )
-
         new_stepsize_hi, new_point_hi = tree_where(
             set_hi_to_lo,
-            (stepsize_lo, PointEval(state.point_lo.location, state.point_lo.value)),
+            (stepsize_lo, state.point_lo.strip_grad()),
             (new_stepsize_hi, new_point_hi),
         )
 
@@ -444,13 +481,24 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             (stepsize_lo, state.point_lo, state.slope_lo),
         )
 
+        # update the reference point
+        # set_cubic_to_hi_1 = ~(middle_satisf_decrease & middle_better_than_lo)
+        # set_cubic_to_hi = set_cubic_to_hi_1 | middle_slope_satisf_third_cond
+        set_cubic_to_hi = set_hi_to_middle | set_hi_to_lo
+        new_cubic_ref, new_cubic_ref_point = tree_where(
+            set_cubic_to_hi,
+            (stepsize_hi, state.point_hi),
+            (stepsize_lo, state.point_lo.strip_grad()),
+        )
+
         # accept_middle = (
         #    middle_satisf_decrease & middle_satisf_curvature & middle_better_than_lo
         # )
         accept_middle = middle_satisf_decrease & middle_satisf_curvature
 
         interval_too_short = (
-            jnp.abs(stepsize_hi - stepsize_lo) < self.min_interval_length
+            # jnp.abs(stepsize_hi - stepsize_lo) <= self.min_interval_length
+            jnp.abs(new_stepsize_hi - new_stepsize_lo) <= self.min_interval_length
         )
 
         # done = interval_too_short or accept_middle
@@ -478,8 +526,8 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             slope_init=state.slope_init,
             #
             stepsize=stepsize_middle,
-            point_i=point_middle,
-            slope_i=slope_middle,
+            current_point=point_middle,
+            current_slope=slope_middle,
             #
             stepsize_lo=new_stepsize_lo,
             point_lo=new_point_lo,
@@ -497,69 +545,80 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             safe_stepsize=new_safe_stepsize,
             safe_point=new_safe_point,
             #
-            proposed_stepsize=state.proposed_stepsize,
+            y_eval_stepsize=state.y_eval_stepsize,
+            #
+            descent_direction=state.descent_direction,
         )
 
     def _search_interval(
         self, y, y_eval, f_info, f_eval_info, y_eval_grad, descent_direction, state
     ):
         # evaluate the slope along the descent direction for the new stepsize
-        stepsize_i = state.proposed_stepsize
-        point_i = PointEvalGrad(y_eval, f_eval_info.f, y_eval_grad)
-        slope_a_i = point_i.compute_grad_dot(descent_direction)
+        new_stepsize = state.y_eval_stepsize
+        new_point = PointEvalGrad(y_eval, f_eval_info.f, y_eval_grad)
+        slope_at_new_point = new_point.compute_grad_dot(descent_direction)
+        jax.debug.print("descent_direction in _search_interval: {}", descent_direction)
 
-        reached_max_stepsize = stepsize_i >= self.max_stepsize
+        reached_max_stepsize = new_stepsize >= self.max_stepsize
 
         # Check the conditions for the new point
-        decrease_satisfied = decrease_condition(
-            stepsize_i,
-            point_i.value,
+        # decrease_satisfied = decrease_condition(
+        #    new_stepsize,
+        #    new_point.value,
+        #    state.init_point.value,
+        #    state.slope_init,
+        #    self.c1,
+        # )
+        decrease_satisfied = decrease_condition_with_approx(
+            new_stepsize,
+            new_point.value,
+            slope_at_new_point,
             state.init_point.value,
             state.slope_init,
             self.c1,
+            self.c3,
         )
-        value_increased = point_i.value >= state.point_i.value
-        curvature_satisfied = curvature_condition(slope_a_i, state.slope_init, self.c2)
+        value_increased = new_point.value >= state.current_point.value
+        curvature_satisfied = curvature_condition(
+            slope_at_new_point, state.slope_init, self.c2
+        )
 
         # save this as the largest stepsize that satisfies the decrease condition
         new_safe_stepsize, new_safe_point = tree_where(
             decrease_satisfied,
-            [stepsize_i, point_i],
+            [new_stepsize, new_point],
             [state.safe_stepsize, state.safe_point],
         )
 
         # There are two conditions when we say we found an interval and call _zoom_into_interval
         found_a = (~decrease_satisfied) | (value_increased & state.ls_iter_num > 0)
-        found_b = (~found_a) & (~curvature_satisfied) & (slope_a_i >= 0)
+        found_b = (~found_a) & (~curvature_satisfied) & (slope_at_new_point >= 0)
         interval_found = found_a | found_b
         # assert ~(found_a & found_b)
 
-        # optax calls ^these^ set_high_to_new and set_low_to_new
-        # set_high_to_new = (decrease_error > 0.0) | ((new_value_step >= prev_value_step) & (iter_num > 0))
-        # set_low_to_new = (new_slope_step >= 0.0) & (~set_high_to_new)
+        # if found_a: we call zoom(alpha_lo = alpha_{i-1}, alpha_hi = alpha_{i})
+        # if found_b: we call zoom(alpha_lo = alpha_{i}, alpha_hi = alpha_{i-1})
 
-        a_prev_is_lo = found_a
-
-        # state.stepsize and point_i are the same as prev_stepsize earlier
+        # state.stepsize is alpha_{i-1}
         new_stepsize_lo, new_point_lo, new_slope_lo = tree_where(
-            a_prev_is_lo,
-            (state.stepsize, state.point_i, state.slope_i),
-            (stepsize_i, point_i, slope_a_i),
+            found_a,
+            (state.stepsize, state.current_point, state.current_slope),
+            (new_stepsize, new_point, slope_at_new_point),
         )
         new_stepsize_hi, new_point_hi = tree_where(
-            a_prev_is_lo,
-            (stepsize_i, point_i.strip_grad()),
-            (state.stepsize, state.point_i.strip_grad()),
+            found_a,
+            (new_stepsize, new_point.strip_grad()),
+            (state.stepsize, state.current_point.strip_grad()),
         )
 
         if self.verbose:
             _cond_print(
-                decrease_satisfied, "Decrease satisfied for {ss}", ss=stepsize_i
+                decrease_satisfied, "Decrease satisfied for {ss}", ss=new_stepsize
             )
 
         if self.verbose:
             _cond_print(
-                curvature_satisfied, "Curvature satisfied for {ss}", ss=stepsize_i
+                curvature_satisfied, "Curvature satisfied for {ss}", ss=new_stepsize
             )
 
         # from optax
@@ -575,9 +634,9 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             init_point=state.init_point,
             slope_init=state.slope_init,
             #
-            stepsize=stepsize_i,
-            point_i=point_i,
-            slope_i=slope_a_i,
+            stepsize=new_stepsize,
+            current_point=new_point,
+            current_slope=slope_at_new_point,
             #
             stepsize_lo=new_stepsize_lo,
             point_lo=new_point_lo,
@@ -595,10 +654,12 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             safe_stepsize=new_safe_stepsize,
             safe_point=new_safe_point,
             #
-            proposed_stepsize=state.proposed_stepsize,
+            y_eval_stepsize=state.y_eval_stepsize,
+            #
+            descent_direction=state.descent_direction,
         )
 
-    def do_first_step(
+    def fake_first_step(
         self,
         y: Y,
         y_eval: Y,
@@ -608,7 +669,11 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         options,
         state: ZoomState,
     ):
-        proposed_stepsize = self._init_stepsize(state.stepsize)
+        # proposed_stepsize = self.init_stepsize_from_previous(state.stepsize)
+        # state = eqx.tree_at(lambda s: s.y_eval_stepsize, state, proposed_stepsize)
+
+        # or just propose 1.
+        proposed_stepsize = jnp.array(1.0)
 
         return proposed_stepsize, state
 
@@ -626,8 +691,8 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         if self.verbose:
             jax.debug.print("state.ls_iter_num: {}", state.ls_iter_num)
 
-        _first_step_fn = ft.partial(
-            self.do_first_step, y, y_eval, f_info, f_eval_info, lin_fn, options
+        _fake_first_step_fn = ft.partial(
+            self.fake_first_step, y, y_eval, f_info, f_eval_info, lin_fn, options
         )
         _regular_step_fn = ft.partial(
             self.do_regular_step, y, y_eval, f_info, f_eval_info, lin_fn, options
@@ -636,7 +701,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         # TODO Condition could also be something like something in the state is inf
         proposed_stepsize, state = jax.lax.cond(
             first_step,
-            _first_step_fn,
+            _fake_first_step_fn,
             _regular_step_fn,
             state,
         )
@@ -646,10 +711,12 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
 
         # set ls_iter_num back to 0 if accepted
         new_ls_iter_num = jnp.where(accept, jnp.array(0), state.ls_iter_num)
-        state = eqx.tree_at(lambda s: s.ls_iter_num, state, new_ls_iter_num)
 
-        if self.verbose:
-            jax.debug.print("Proposing {}", proposed_stepsize)
+        state = eqx.tree_at(
+            lambda s: (s.ls_iter_num, s.y_eval_stepsize),
+            state,
+            (new_ls_iter_num, proposed_stepsize),
+        )
 
         return (proposed_stepsize, accept, RESULTS.successful, state)
 
@@ -669,16 +736,26 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         y_eval_grad = lin_to_grad(
             lin_fn, y_eval, autodiff_mode=options.get("autodiff_mode", "bwd")
         )
-        descent_direction = tree_sub(y_eval, y)
+        # jax.debug.print("Gradient eval")
+        # descent_direction = tree_sub(y_eval, y)
 
-        reinit_state = self._actual_init(
+        # def _reinit_state_fn():
+        #    return self._actual_init(
+        #        PointEvalGrad(y, f_info.f, f_info.grad),
+        #        state.stepsize,  # at this point it should be the last stepsize we took in the last linesearch
+        #        descent_direction,
+        #    )
+
+        _reinit_state_fn = ft.partial(
+            self._actual_init,
             PointEvalGrad(y, f_info.f, f_info.grad),
             state.stepsize,  # at this point it should be the last stepsize we took in the last linesearch
-            descent_direction,
+            y_eval,
         )
+
         state = jax.lax.cond(
             state.ls_iter_num == 0,
-            lambda: reinit_state,
+            _reinit_state_fn,
             lambda: state,
         )
 
@@ -689,7 +766,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             f_info,
             f_eval_info,
             y_eval_grad,
-            descent_direction,
+            state.descent_direction,
         )
         _search_fn = ft.partial(
             self._search_interval,
@@ -698,7 +775,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             f_info,
             f_eval_info,
             y_eval_grad,
-            descent_direction,
+            state.descent_direction,
         )
 
         state = jax.lax.cond(
@@ -720,6 +797,6 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             jax.debug.print("Checked {}. Done: {}", state.stepsize, state.done)
 
         proposed_stepsize = self.propose_stepsize(state)
-        state = eqx.tree_at(lambda s: s.proposed_stepsize, state, proposed_stepsize)
+        state = eqx.tree_at(lambda s: s.y_eval_stepsize, state, proposed_stepsize)
 
         return proposed_stepsize, state
