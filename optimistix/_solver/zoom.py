@@ -419,26 +419,11 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
 
     def _propose_by_increase(self, state: ZoomState) -> FloatScalar:
         """
-        Propose a stepsize by either increasing the previous stepsize or resetting.
-
-        On the first step of the current search use the initial stepsize guess which was
-        made based on the previous search's final stepsize.
-        See `Zoom.init_stepsize_from_previous`
-        On all other iterations, increase by `increase_factor`.
-
-        In all cases, limit from above by the maximum allowed stepsize.
+        Propose a new stepsize by increasing the current one by `increase_factor`.
         """
-        new_stepsize = jnp.where(
-            state.ls_iter_num == 0,
-            state.init_stepsize_guess,
-            state.stepsize * self.increase_factor,
-        )
-        # guard from above by max stepsize
-        new_stepsize = jnp.minimum(new_stepsize, self.max_stepsize)
+        return state.stepsize * self.increase_factor
 
-        return new_stepsize
-
-    def propose_stepsize(self, state: ZoomState) -> FloatScalar:
+    def _interpolate_or_increase(self, state: ZoomState) -> FloatScalar:
         """
         Propose a stepsize in a way that depends on which stage of the zoom linesearch
         we are at.
@@ -451,6 +436,31 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             self._propose_by_increase,
             state,
         )
+
+    def propose_stepsize(self, state: ZoomState) -> FloatScalar:
+        """
+        Propose a stepsize to evaluate.
+
+        On the first step of the current search use the initial stepsize guess which was
+        made based on the previous search's final stepsize.
+        See `Zoom.init_stepsize_from_previous`
+
+        On all other iterations, propose based on the current stepsize and in which
+        stage of tha zoom algorithm we are.
+
+        In all cases, limit from above by the maximum allowed stepsize (`max_stepsize`).
+        """
+        new_stepsize = jax.lax.cond(
+            state.ls_iter_num == 0,
+            lambda state: state.init_stepsize_guess,
+            self._interpolate_or_increase,
+            state,
+        )
+
+        # guard from above by max stepsize
+        new_stepsize = jnp.minimum(new_stepsize, self.max_stepsize)
+
+        return new_stepsize
 
     def _zoom_into_interval(
         self, y, y_eval, f_info, f_eval_info, y_eval_grad, descent_direction, state
