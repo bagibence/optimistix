@@ -268,7 +268,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         If the search failed, replace the stepsize stored in `state` with
         the safe stepsize.
         """
-        jax.debug.print("Trying safe stepsize: {}", state.safe_stepsize)
+        # jax.debug.print("Trying safe stepsize: {}", state.safe_stepsize)
 
         final_stepsize, final_point = tree_where(
             (state.safe_stepsize > 0.0),
@@ -454,13 +454,13 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
 
         In all cases, limit from above by the maximum allowed stepsize (`max_stepsize`).
         """
-        # new_stepsize = jax.lax.cond(
-        #    state.ls_iter_num == 0,
-        #    lambda state: state.init_stepsize_guess,
-        #    self._interpolate_or_increase,
-        #    state,
-        # )
-        new_stepsize = self._interpolate_or_increase(state)
+        new_stepsize = jax.lax.cond(
+            state.ls_iter_num == 0,
+            lambda state: state.init_stepsize_guess,
+            self._interpolate_or_increase,
+            state,
+        )
+        # new_stepsize = self._interpolate_or_increase(state)
 
         # guard from above by max stepsize
         new_stepsize = jnp.minimum(new_stepsize, self.max_stepsize)
@@ -756,12 +756,12 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         Do nothing, just propose 1.0 on the very first step of the whole optimization.
         """
         proposed_stepsize = jnp.array(1.0)
+        accept = jnp.array(True)
 
-        return proposed_stepsize, state
+        return proposed_stepsize, accept, state
 
-    def step(
+    def _safe_step(
         self,
-        first_step: Bool[Array, ""],
         y: Y,
         y_eval: Y,
         f_info: _FnInfo,
@@ -770,42 +770,16 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         options,
         state: ZoomState,
     ):
-        _fake_first_step_fn = ft.partial(
-            self.fake_first_step, y, y_eval, f_info, f_eval_info, lin_fn, options
-        )
-        _regular_step_fn = ft.partial(
-            self.do_regular_step, y, y_eval, f_info, f_eval_info, lin_fn, options
-        )
+        del y, y_eval, f_info, f_eval_info, lin_fn, options
 
-        proposed_stepsize, state = jax.lax.cond(
-            first_step,
-            _fake_first_step_fn,
-            _regular_step_fn,
-            state,
-        )
+        # TODO does it matter what we propose here?
+        # proposed_stepsize = jnp.array(1.0)
+        proposed_stepsize = jnp.array(jnp.inf)
+        accept = jnp.array(True)
 
-        accept = first_step | state.done | state.failed
+        return proposed_stepsize, accept, state
 
-        # set ls_iter_num back to 0 if accepted
-        new_ls_iter_num = jnp.where(accept, jnp.array(0), state.ls_iter_num)
-        # and propose an initial stepsize for the next linesearch
-        proposed_stepsize = jnp.where(
-            accept,
-            self.init_stepsize_from_previous(state.stepsize),
-            proposed_stepsize,
-        )
-
-        _cond_print(accept, "Accepting {ss}", ss=state.stepsize)
-
-        state = eqx.tree_at(
-            lambda s: (s.ls_iter_num, s.y_eval_stepsize),
-            state,
-            (new_ls_iter_num, proposed_stepsize),
-        )
-
-        return (proposed_stepsize, accept, RESULTS.successful, state)
-
-    def do_regular_step(
+    def _regular_step(
         self,
         y: Y,
         y_eval: Y,
@@ -820,19 +794,6 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
 
         y_eval_grad = lin_to_grad(
             lin_fn, y_eval, autodiff_mode=options.get("autodiff_mode", "bwd")
-        )
-
-        # on the first real iteration of the linesearch, reinitialize the state
-        _reinit_state_fn = ft.partial(
-            self._actual_init,
-            PointEvalGrad(y, f_info.f, f_info.grad),
-            state.y_eval_stepsize,  # proposed at the end of the previous linesearch
-            y_eval,  # created with state.y_eval_stepsize
-        )
-        state = jax.lax.cond(
-            state.ls_iter_num == 0,
-            _reinit_state_fn,
-            lambda: state,
         )
 
         _zoom_fn = ft.partial(
@@ -861,7 +822,10 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             state,
         )
 
-        # if failed, use the safe stepsize as the final one
+        # if failed, propose the safe stepsize for evaluation
+        # y_eval will be created with the safe stepsize
+        # the method that takes the safe stepsize will be triggered
+        # and accepts it
         state = jax.lax.cond(
             state.failed,
             Zoom._try_replace_stepsize_with_safe,
@@ -883,6 +847,104 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             self.propose_stepsize,
             state,
         )
-        # proposed_stepsize = self.propose_stepsize(state)
 
-        return proposed_stepsize, state
+        # only accept the stepsize we checked here if it's good
+        accept = state.done
+
+        return proposed_stepsize, accept, state
+
+    def _step(
+        self,
+        y: Y,
+        y_eval: Y,
+        f_info: _FnInfo,
+        f_eval_info: _FnEvalInfo,
+        lin_fn,
+        options,
+        state: ZoomState,
+    ):
+        # on the first real iteration of the linesearch, reinitialize the state
+        _reinit_state_fn = ft.partial(
+            self._actual_init,
+            PointEvalGrad(y, f_info.f, f_info.grad),
+            state.y_eval_stepsize,  # proposed at the end of the previous linesearch
+            y_eval,  # created with state.y_eval_stepsize
+        )
+        state = jax.lax.cond(
+            state.ls_iter_num == 0,
+            _reinit_state_fn,
+            lambda: state,
+        )
+
+        _safe_step_fn = ft.partial(
+            self._safe_step, y, y_eval, f_info, f_eval_info, lin_fn, options
+        )
+        _regular_step_fn = ft.partial(
+            self._regular_step, y, y_eval, f_info, f_eval_info, lin_fn, options
+        )
+        proposed_stepsize, accept, state = jax.lax.cond(
+            state.failed & (state.ls_iter_num > 0),
+            _safe_step_fn,
+            _regular_step_fn,
+            state,
+        )
+
+        # TODO do I need this?
+        # accept = accept | state.done | state.failed
+
+        _cond_print(accept, "Accepting {ss}", ss=state.stepsize)
+
+        _cond_print(
+            accept,
+            "state.stepsize == state.y_eval_stepsize: {b}",
+            b=state.stepsize == state.y_eval_stepsize,
+        )
+
+        return proposed_stepsize, accept, state
+
+    def step(
+        self,
+        first_step: Bool[Array, ""],
+        y: Y,
+        y_eval: Y,
+        f_info: _FnInfo,
+        f_eval_info: _FnEvalInfo,
+        lin_fn,
+        options,
+        state: ZoomState,
+    ):
+        _fake_first_step_fn = ft.partial(
+            self.fake_first_step, y, y_eval, f_info, f_eval_info, lin_fn, options
+        )
+        _step_fn = ft.partial(
+            self._step, y, y_eval, f_info, f_eval_info, lin_fn, options
+        )
+
+        proposed_stepsize, accept, state = jax.lax.cond(
+            first_step,
+            _fake_first_step_fn,
+            _step_fn,
+            state,
+        )
+
+        # if accepted, set ls_iter_num back to 0
+        new_ls_iter_num = jnp.where(
+            accept,
+            jnp.array(0),
+            state.ls_iter_num,
+        )
+        # and propose an initial stepsize for the next linesearch
+        proposed_stepsize = jnp.where(
+            accept,
+            self.init_stepsize_from_previous(state.stepsize),
+            proposed_stepsize,
+        )
+
+        # write these into the state
+        state = eqx.tree_at(
+            lambda s: (s.ls_iter_num, s.y_eval_stepsize),
+            state,
+            (new_ls_iter_num, proposed_stepsize),
+        )
+
+        return proposed_stepsize, accept, RESULTS.successful, state
