@@ -223,6 +223,7 @@ class ZoomState(eqx.Module):
     #
     safe_stepsize: FloatScalar
     safe_point: PointEvalGrad
+    safe_slope: FloatScalar
     #
     y_eval_stepsize: FloatScalar
     #
@@ -244,25 +245,16 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
     # TODO decide on defaults
 
     @staticmethod
-    def _try_replace_stepsize_with_safe(state: ZoomState):
+    def _replace_step_with_safe(state: ZoomState):
         """
         If the search failed, replace the stepsize stored in `state` with
         the safe stepsize.
         """
-        # jax.debug.print("Trying safe stepsize: {}", state.safe_stepsize)
-
-        final_stepsize, final_point = tree_where(
-            (state.safe_stepsize > 0.0),
-            [state.safe_stepsize, state.safe_point],
-            [state.stepsize, state.current_point],
-        )
-        # TODO why not just store this in the state as safe_slope?
-        # recalculate the final slope for consistency
-        final_slope = final_point.compute_grad_dot(state.descent_direction)
+        # jax.debug.print("Setting to safe stepsize: {}", state.safe_stepsize)
         state = eqx.tree_at(
             lambda s: (s.stepsize, s.current_point, s.current_slope),
             state,
-            (final_stepsize, final_point, final_slope),
+            (state.safe_stepsize, state.safe_point, state.safe_slope),
         )
 
         return state
@@ -339,6 +331,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             #
             safe_stepsize=jnp.array(0.0),
             safe_point=init_point,
+            safe_slope=_slope_init,
             #
             y_eval_stepsize=y_eval_stepsize,
             #
@@ -380,6 +373,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             #
             safe_stepsize=jnp.array(0.0),
             safe_point=init_point,
+            safe_slope=_slope_init,
             #
             y_eval_stepsize=jnp.array(-jnp.inf),
             #
@@ -425,22 +419,9 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         """
         Propose a stepsize to evaluate.
 
-        On the first step of the current search use the initial stepsize guess which was
-        made based on the previous search's final stepsize.
-        See `Zoom.init_stepsize_from_previous`
-
-        On all other iterations, propose based on the current stepsize and in which
-        stage of tha zoom algorithm we are.
-
         In all cases, limit from above by the maximum allowed stepsize (`max_stepsize`).
         """
-        new_stepsize = jax.lax.cond(
-            state.ls_iter_num == 0,
-            lambda state: state.init_stepsize_guess,
-            self._interpolate_or_increase,
-            state,
-        )
-        # new_stepsize = self._interpolate_or_increase(state)
+        new_stepsize = self._interpolate_or_increase(state)
 
         # guard from above by max stepsize
         new_stepsize = jnp.minimum(new_stepsize, self.max_stepsize)
@@ -465,9 +446,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         curv_error = jnp.abs(slope_a_i) - self.c2 * jnp.abs(slope_init)
         return curv_error <= 0.0
 
-    def _zoom_into_interval(
-        self, y, y_eval, f_info, f_eval_info, y_eval_grad, descent_direction, state
-    ):
+    def _zoom_into_interval(self, y, y_eval, f_info, f_eval_info, y_eval_grad, state):
         if self.verbose:
             jax.debug.print(
                 "Zooming into interval: ({}, {})", state.stepsize_lo, state.stepsize_hi
@@ -476,8 +455,8 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         # y_eval was created by taking state.y_eval_stepsize
         stepsize_middle = state.y_eval_stepsize
         point_middle = PointEvalGrad(y_eval, f_eval_info.f, y_eval_grad)
-        slope_middle = point_middle.compute_grad_dot(descent_direction)
-        # jax.debug.print("descent_direction for slope_middle: {}", descent_direction)
+        slope_middle = point_middle.compute_grad_dot(state.descent_direction)
+        # jax.debug.print("descent_direction for slope_middle: {}", state.descent_direction)
         # jax.debug.print("grad for slope_middle: {}", point_middle.grad)
         # jax.debug.print("slope_middle: {}", slope_middle)
 
@@ -510,10 +489,10 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         update_safe_stepsize = middle_satisf_decrease & (
             stepsize_middle > state.safe_stepsize
         )
-        new_safe_stepsize, new_safe_point = tree_where(
+        new_safe_stepsize, new_safe_point, new_safe_slope = tree_where(
             update_safe_stepsize,
-            [stepsize_middle, point_middle],
-            [state.safe_stepsize, state.safe_point],
+            [stepsize_middle, point_middle, slope_middle],
+            [state.safe_stepsize, state.safe_point, state.safe_slope],
         )
 
         #
@@ -612,6 +591,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             #
             safe_stepsize=new_safe_stepsize,
             safe_point=new_safe_point,
+            safe_slope=new_safe_slope,
             #
             y_eval_stepsize=state.y_eval_stepsize,
             #
@@ -625,18 +605,17 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         f_info,
         f_eval_info,
         y_eval_grad,
-        descent_direction: Y,
         state,
     ):
         # evaluate the slope along the descent direction for the new stepsize
         new_stepsize = state.y_eval_stepsize
         new_point = PointEvalGrad(y_eval, f_eval_info.f, y_eval_grad)
-        slope_at_new_point = new_point.compute_grad_dot(descent_direction)
+        slope_at_new_point = new_point.compute_grad_dot(state.descent_direction)
 
         # jax.debug.print("params_init in _search_interval: {}", y)
         # jax.debug.print("y_eval in _search_interval: {}", y_eval)
         # jax.debug.print("y_eval's value in _search_interval: {}", new_point.value)
-        # jax.debug.print("descent_direction in _search_interval: {}", descent_direction)
+        # jax.debug.print("descent_direction in _search_interval: {}", state.descent_direction)
         # jax.debug.print("grad_at_new_point: {}", new_point.grad)
         # jax.debug.print("slope_at_new_point: {}", slope_at_new_point)
 
@@ -656,10 +635,10 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         )
 
         # save this as the largest stepsize that satisfies the decrease condition
-        new_safe_stepsize, new_safe_point = tree_where(
+        new_safe_stepsize, new_safe_point, new_safe_slope = tree_where(
             decrease_satisfied,
-            (new_stepsize, new_point),
-            (state.safe_stepsize, state.safe_point),
+            (new_stepsize, new_point, slope_at_new_point),
+            (state.safe_stepsize, state.safe_point, state.safe_slope),
         )
 
         # There are two conditions when we say we found an interval
@@ -730,6 +709,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             #
             safe_stepsize=new_safe_stepsize,
             safe_point=new_safe_point,
+            safe_slope=new_safe_slope,
             #
             y_eval_stepsize=state.y_eval_stepsize,
             #
@@ -746,13 +726,9 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         options,
         state: ZoomState,
     ):
-        """
-        Do nothing, just propose 1.0 on the very first step of the whole optimization.
-        """
-        proposed_stepsize = jnp.array(1.0)
+        del y, y_eval, f_info, f_eval_info, lin_fn, options
         accept = jnp.array(True)
-
-        return proposed_stepsize, accept, state
+        return accept, state
 
     def _safe_step(
         self,
@@ -765,13 +741,8 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         state: ZoomState,
     ):
         del y, y_eval, f_info, f_eval_info, lin_fn, options
-
-        # TODO does it matter what we propose here?
-        # proposed_stepsize = jnp.array(1.0)
-        proposed_stepsize = jnp.array(jnp.inf)
         accept = jnp.array(True)
-
-        return proposed_stepsize, accept, state
+        return accept, state
 
     def _regular_step(
         self,
@@ -797,7 +768,6 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             f_info,
             f_eval_info,
             y_eval_grad,
-            state.descent_direction,
         )
         _search_fn = ft.partial(
             self._search_interval,
@@ -806,24 +776,12 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             f_info,
             f_eval_info,
             y_eval_grad,
-            state.descent_direction,
         )
 
         state = jax.lax.cond(
             state.interval_found,
             _zoom_fn,
             _search_fn,
-            state,
-        )
-
-        # if failed, propose the safe stepsize for evaluation
-        # y_eval will be created with the safe stepsize
-        # the method that takes the safe stepsize will be triggered
-        # and accepts it
-        state = jax.lax.cond(
-            state.failed,
-            Zoom._try_replace_stepsize_with_safe,
-            lambda state: state,
             state,
         )
 
@@ -835,17 +793,10 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
                 state.failed,
             )
 
-        proposed_stepsize = jax.lax.cond(
-            state.failed,
-            lambda state: state.stepsize,
-            self.propose_stepsize,
-            state,
-        )
-
         # only accept the stepsize we checked here if it's good
         accept = state.done
 
-        return proposed_stepsize, accept, state
+        return accept, state
 
     def _step(
         self,
@@ -871,14 +822,17 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             lambda: state,
         )
 
+        # if we failed on the previous iteration, y_eval was made with the safe stepsize
+        # so just accept it with _safe_step
+        # otherwise take a regular step
         _safe_step_fn = ft.partial(
             self._safe_step, y, y_eval, f_info, f_eval_info, lin_fn, options
         )
         _regular_step_fn = ft.partial(
             self._regular_step, y, y_eval, f_info, f_eval_info, lin_fn, options
         )
-        proposed_stepsize, accept, state = jax.lax.cond(
-            state.failed & (state.ls_iter_num > 0),
+        accept, state = jax.lax.cond(
+            state.failed,
             _safe_step_fn,
             _regular_step_fn,
             state,
@@ -887,10 +841,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         # TODO do I need this?
         # accept = accept | state.done | state.failed
 
-        if self.verbose:
-            _cond_print(accept, "Accepting {ss}", ss=state.stepsize)
-
-        return proposed_stepsize, accept, state
+        return accept, state
 
     def step(
         self,
@@ -910,14 +861,17 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             self._step, y, y_eval, f_info, f_eval_info, lin_fn, options
         )
 
-        proposed_stepsize, accept, state = jax.lax.cond(
+        accept, state = jax.lax.cond(
             first_step,
             _fake_first_step_fn,
             _step_fn,
             state,
         )
 
-        # if accepted, set ls_iter_num back to 0
+        if self.verbose:
+            _cond_print(accept & (~first_step), "Accepting {ss}", ss=state.stepsize)
+
+        # if accepted, reset the linesearch iteration counter
         new_ls_iter_num = jnp.where(
             accept,
             jnp.array(0),
@@ -927,9 +881,31 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         proposed_stepsize = jnp.where(
             accept,
             self.init_stepsize_from_previous(state.stepsize),
+            self.propose_stepsize(state),
+        )
+
+        # if we failed on the current iteration (so failed but didn't accept yet)
+        # and the safe stepsize is valid
+        # then try backpedaling to the safe step
+        # and propose that instead so that we take one more step with it
+        # which will be accepted by _safe_step
+        state = jax.lax.cond(
+            ~accept & state.failed & (state.safe_stepsize > 0.0),
+            Zoom._replace_step_with_safe,
+            lambda state: state,
+            state,
+        )
+        proposed_stepsize = jnp.where(
+            ~accept & state.failed & (state.safe_stepsize > 0.0),
+            state.stepsize,
             proposed_stepsize,
         )
-        # TODO what if I move the whole stepsize proposal here?
+        # TODO what if we fail and the safe stepsize is not valid?
+        if self.verbose:
+            _cond_print(
+                ~accept & state.failed & (state.safe_stepsize <= 0.0),
+                "Failed and safe stepsize is zero",
+            )
 
         # write these into the state
         state = eqx.tree_at(
