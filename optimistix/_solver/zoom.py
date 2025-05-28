@@ -27,12 +27,14 @@ def _cond_print(condition, message, **kwargs):
 
 
 def quadratic_min(
-    a: float, value_a: float, slope_a: float, b: float, value_b: float
-) -> float:
+    a: FloatScalar,
+    value_a: FloatScalar,
+    slope_a: FloatScalar,
+    b: FloatScalar,
+    value_b: FloatScalar,
+) -> FloatScalar:
     """
-    Quadratic interpolation.
-
-    Find the minimum of the curve fitted to (a, value_a) and (b, value_b)
+    Find the minimum of the quadratic curve fitted to (a, value_a) and (b, value_b).
     """
     dist = b - a
     upper = -slope_a * dist**2
@@ -143,19 +145,6 @@ def interpolate(
     return a_j
 
 
-def decrease_condition(
-    stepsize_i: FloatScalar,
-    value_a_i: FloatScalar,
-    value_init: FloatScalar,
-    slope_init: FloatScalar,
-    c1: float,
-) -> Bool:
-    """
-    Check whether stepsize_i satisfies the Armijo decrease condition.
-    """
-    return value_a_i <= value_init + c1 * stepsize_i * slope_init
-
-
 def tree_where(cond, candidate, default):
     def _set_val(x, y):
         return jnp.where(cond, x, y)
@@ -178,13 +167,13 @@ def tree_sub(tree_x, tree_y):
     return jax.tree.map(operator.sub, tree_x, tree_y)
 
 
-# like FunctionInfo.Eval
+# like FunctionInfo.Eval, just including the location
 class PointEval(eqx.Module):
     location: jax.Array
     value: FloatScalar
 
 
-# like FunctionInfo.EvalGrad
+# like FunctionInfo.EvalGrad, just including the location
 class PointEvalGrad(eqx.Module):
     location: jax.Array
     value: FloatScalar
@@ -198,39 +187,43 @@ class PointEvalGrad(eqx.Module):
 
 
 class ZoomState(eqx.Module):
+    # number of iterations in the current linesearch
     ls_iter_num: IntScalar
-    #
+    # initial stepsize guess to evaluate
+    # TODO is this currently used anywhere?
     init_stepsize_guess: FloatScalar
+    # point where the linesearch is anchored
     init_point: PointEvalGrad
     slope_init: FloatScalar
-    #
+    # last evaluated point
     stepsize: FloatScalar
     current_point: PointEvalGrad
     current_slope: FloatScalar
-    #
+    # diagnostics for control flow
     interval_found: Bool
     done: Bool
     failed: Bool
-    #
+    # interval to zoom into
     stepsize_lo: FloatScalar
     point_lo: PointEvalGrad
     slope_lo: FloatScalar
     stepsize_hi: FloatScalar
     point_hi: PointEval
-    #
+    # used for the cubic interpolation
     cubic_ref_stepsize: FloatScalar
     cubic_ref_point: PointEval
-    #
+    # fallback stepsize that satisfies at least the decrease condition
     safe_stepsize: FloatScalar
     safe_point: PointEvalGrad
     safe_slope: FloatScalar
-    #
+    # used to keep track of the stepsized used for the currently evaluated point
     y_eval_stepsize: FloatScalar
-    #
+    # descent direction we are taking the steps in from init_point
     descent_direction: jax.Array
 
 
 class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
+    # TODO decide on defaults
     c1: float = 1e-4
     c2: float = 0.9
     c3: float = 1e-6
@@ -242,13 +235,11 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
     maxls: int = 30
     verbose: bool = False
 
-    # TODO decide on defaults
-
     @staticmethod
     def _replace_step_with_safe(state: ZoomState):
         """
-        If the search failed, replace the stepsize stored in `state` with
-        the safe stepsize.
+        Replace the stepsize stored in `state` with the safe stepsize.
+        Invoked if the search failed.
         """
         # jax.debug.print("Setting to safe stepsize: {}", state.safe_stepsize)
         state = eqx.tree_at(
@@ -298,6 +289,10 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         y_eval_stepsize: FloatScalar,
         y_eval: PointEval,
     ) -> ZoomState:
+        """
+        Init function actually used when starting a new linesearch,
+        aka when the number of linesearch steps is reset to 0.
+        """
         # init_point is where stepsize = 0
         descent_direction = tree_sub(y_eval, init_point.location)
         _slope_init = init_point.compute_grad_dot(descent_direction)
@@ -339,14 +334,18 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         )
 
     def init(self, y, f_info_struct) -> ZoomState:
+        """
+        Empty init, called only once when the whole optimization starts.
+
+        Initialize some things to inf to avoid uninitialized values leaking into
+        computations without errors.
+        """
         if self.verbose:
             jax.debug.print("Doing empty init")
 
-        # empty init
-        # it's called once when the whole optimization starts
         _slope_init = jnp.array(-jnp.inf)
-        init_point = PointEvalGrad(y, jnp.array(jnp.inf), tree_full_like(y, 0.0))
-        init_stepsize = jnp.array(1.0)
+        init_point = PointEvalGrad(y, jnp.array(jnp.inf), tree_full_like(y, jnp.inf))
+        init_stepsize = jnp.array(-jnp.inf)
 
         return ZoomState(
             ls_iter_num=jnp.array(0),
@@ -377,12 +376,13 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             #
             y_eval_stepsize=jnp.array(-jnp.inf),
             #
-            descent_direction=tree_full_like(y, 0.0),
+            descent_direction=tree_full_like(y, jnp.inf),
         )
 
     def _propose_by_interpolation(self, state: ZoomState) -> FloatScalar:
         """
-        Propose a stepsize by interpolation, fitting a curve to lo, hi, cubic_ref.
+        Propose a stepsize by interpolation, fitting a curve to lo, hi, cubic_ref,
+        matching function values at all locations and the slope at lo.
         """
         stepsize_middle = interpolate(
             state.stepsize_lo,
@@ -401,27 +401,21 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         """
         return state.stepsize * self.increase_factor
 
-    def _interpolate_or_increase(self, state: ZoomState) -> FloatScalar:
+    def propose_stepsize(self, state: ZoomState) -> FloatScalar:
         """
         Propose a stepsize in a way that depends on which stage of the zoom linesearch
         we are at.
         If the interval is found and we are zooming into it: interpolate.
         If the interval is not found yet: increase.
+
+        In all cases, limit from above by the maximum allowed stepsize (`max_stepsize`).
         """
-        return jax.lax.cond(
+        new_stepsize = jax.lax.cond(
             state.interval_found,
             self._propose_by_interpolation,
             self._propose_by_increase,
             state,
         )
-
-    def propose_stepsize(self, state: ZoomState) -> FloatScalar:
-        """
-        Propose a stepsize to evaluate.
-
-        In all cases, limit from above by the maximum allowed stepsize (`max_stepsize`).
-        """
-        new_stepsize = self._interpolate_or_increase(state)
 
         # guard from above by max stepsize
         new_stepsize = jnp.minimum(new_stepsize, self.max_stepsize)
@@ -429,8 +423,19 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         return new_stepsize
 
     def decrease_condition_with_approx(
-        self, stepsize, value_step, slope_step, value_init, slope_init
-    ):
+        self,
+        stepsize: FloatScalar,
+        value_step: FloatScalar,
+        slope_step: FloatScalar,
+        value_init: FloatScalar,
+        slope_init: FloatScalar,
+    ) -> FloatScalar:
+        """
+        Evaluate the Armijo decrease condition, with an optional approximation
+        if `c3` is set.
+
+        Adapted from JAXopt and Optax.
+        """
         # adopted from jaxopt and optax
         decrease_error = value_step - value_init - self.c1 * stepsize * slope_init
         if self.c3 is not None:
@@ -442,11 +447,20 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
 
         return decrease_error <= 0.0
 
-    def curvature_condition(self, slope_a_i: FloatScalar, slope_init: FloatScalar):
-        curv_error = jnp.abs(slope_a_i) - self.c2 * jnp.abs(slope_init)
+    def curvature_condition(
+        self, slope_at_new_point: FloatScalar, slope_init: FloatScalar
+    ) -> FloatScalar:
+        """
+        Evaluate the strong Wolfe curvature condition.
+        """
+        curv_error = jnp.abs(slope_at_new_point) - self.c2 * jnp.abs(slope_init)
         return curv_error <= 0.0
 
     def _zoom_into_interval(self, y, y_eval, f_info, f_eval_info, y_eval_grad, state):
+        """
+        Attempt to find an acceptable stepsize in the interval (state.lo, state.lo),
+        and shrink the interval if not found yet.
+        """
         if self.verbose:
             jax.debug.print(
                 "Zooming into interval: ({}, {})", state.stepsize_lo, state.stepsize_hi
@@ -607,6 +621,9 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         y_eval_grad,
         state,
     ):
+        """
+        Look for interval to zoom into.
+        """
         # evaluate the slope along the descent direction for the new stepsize
         new_stepsize = state.y_eval_stepsize
         new_point = PointEvalGrad(y_eval, f_eval_info.f, y_eval_grad)
@@ -726,6 +743,10 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         options,
         state: ZoomState,
     ):
+        """
+        Only called once in the very beginning of the optimization.
+        Just accepts the proposed random point.
+        """
         del y, y_eval, f_info, f_eval_info, lin_fn, options
         accept = jnp.array(True)
         return accept, state
@@ -740,6 +761,10 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         options,
         state: ZoomState,
     ):
+        """
+        Called after the search fails and the safe stepsize is proposed,
+        `y_eval` was created with that safe stepsize, so just accept it.
+        """
         del y, y_eval, f_info, f_eval_info, lin_fn, options
         accept = jnp.array(True)
         return accept, state
@@ -754,6 +779,11 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         options: dict,
         state: ZoomState,
     ):
+        """
+        This is a proper step of the zoom linesearch.
+        Dispatches to either _search_interval or _zoom_into_interval.
+        Accepts `y_eval` if those set `state.done` to True.
+        """
         if self.verbose:
             jax.debug.print("Linesearch regular iter: {}", state.ls_iter_num)
 
@@ -808,6 +838,11 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         options,
         state: ZoomState,
     ):
+        """
+        This is repeatedly called after the first fake step is out of the way.
+        Potentially reinitialize the state, then perform a regular step or accept the
+        safe stepsize.
+        """
         # on the first real iteration of the linesearch, reinitialize the state
         init_point = PointEvalGrad(y, f_info.f, f_info.grad)
         _reinit_state_fn = ft.partial(
@@ -854,6 +889,25 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         options,
         state: ZoomState,
     ):
+        """
+        Dispatches to fake_first_step if `first_step` is true, to _step otherwise.
+
+        `y_eval` is accepted in 3 conditions:
+            - on the fake first step
+            - it satisfies both the decrease and the curvature conditions
+            - we failed on the previous iteration, `y_eval` was created with the safe
+            stepsize, and are accepting that
+
+        If `y_eval` is accepted:
+            - reset the linesearch iteration to zero,
+            allowing the initialization to be triggered the next time it is called.
+            - propose a new stepsize for the next linesearch based on the currently
+            accepted final stepsize
+        If we failed on the current iteration:
+            - if the safe stepsize is useful, replace the stepsize with that
+            - propose the (hopefully safe) stepsize to be accepted in the next
+            iteration by _safe_step
+        """
         _fake_first_step_fn = ft.partial(
             self.fake_first_step, y, y_eval, f_info, f_eval_info, lin_fn, options
         )
