@@ -189,9 +189,6 @@ class PointEvalGrad(eqx.Module):
 class ZoomState(eqx.Module):
     # number of iterations in the current linesearch
     ls_iter_num: IntScalar
-    # initial stepsize guess to evaluate
-    # TODO is this currently used anywhere?
-    init_stepsize_guess: FloatScalar
     # point where the linesearch is anchored
     init_point: PointEvalGrad
     slope_init: FloatScalar
@@ -303,7 +300,6 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
 
         return ZoomState(
             ls_iter_num=jnp.array(0),
-            init_stepsize_guess=init_stepsize,
             init_point=init_point,
             slope_init=_slope_init,
             #
@@ -349,7 +345,6 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
 
         return ZoomState(
             ls_iter_num=jnp.array(0),
-            init_stepsize_guess=init_stepsize,
             init_point=init_point,
             slope_init=_slope_init,
             #
@@ -582,7 +577,6 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         return ZoomState(
             ls_iter_num=state.ls_iter_num + 1,
             #
-            init_stepsize_guess=state.init_stepsize_guess,
             init_point=state.init_point,
             slope_init=state.slope_init,
             #
@@ -703,7 +697,6 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         return ZoomState(
             ls_iter_num=state.ls_iter_num + 1,
             #
-            init_stepsize_guess=state.init_stepsize_guess,
             init_point=state.init_point,
             slope_init=state.slope_init,
             #
