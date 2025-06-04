@@ -1,5 +1,6 @@
 import functools as ft
 import operator
+from typing import Generic
 
 import equinox as eqx
 import jax
@@ -152,28 +153,28 @@ def tree_sub(tree_x: PyTree, tree_y: PyTree) -> PyTree:
     return jax.tree.map(operator.sub, tree_x, tree_y)
 
 
-class PointEval(eqx.Module, strict=True):
+class PointEval(eqx.Module, Generic[Y], strict=True):
     """
     Like FunctionInfo.Eval, just including the location.
     """
 
-    location: jax.Array
+    location: Y
     value: FloatScalar
 
 
-class PointEvalGrad(eqx.Module, strict=True):
+class PointEvalGrad(eqx.Module, Generic[Y], strict=True):
     """
     Like FunctionInfo.EvalGrad, just including the location
     """
 
-    location: jax.Array
+    location: Y
     value: FloatScalar
-    grad: jax.Array
+    grad: Y
 
-    def compute_grad_dot(self, y):
+    def compute_grad_dot(self, y: Y):
         return tree_dot(self.grad, y)
 
-    def strip_grad(self) -> PointEval:
+    def strip_grad(self) -> PointEval[Y]:
         return PointEval(self.location, self.value)
 
 
@@ -275,19 +276,18 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         self,
         init_point: PointEvalGrad,
         y_eval_stepsize: FloatScalar,
-        y_eval: PointEval,
+        y_eval: Y,
     ) -> ZoomState:
         """
         Init function actually used when starting a new linesearch,
         aka when the number of linesearch steps is reset to 0.
+
+        Instead of initializing the stepsize here, we use the stepsize that was proposed
+        at the end of the last linesearch step and was used to create the `y_eval` here.
         """
         # init_point is where stepsize = 0
         descent_direction = tree_sub(y_eval, init_point.location)
         _slope_init = init_point.compute_grad_dot(descent_direction)
-
-        # instead of initializing here, we use the stepsize that was proposed at the end
-        # of the last linesearch step and was used to create the y_eval here
-        init_stepsize = y_eval_stepsize
 
         return ZoomState(
             ls_iter_num=jnp.array(0),
