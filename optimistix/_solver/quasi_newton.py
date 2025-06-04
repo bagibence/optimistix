@@ -1,4 +1,5 @@
 import abc
+import functools as ft
 from collections.abc import Callable
 from typing import Any, Generic, TypeVar, Union
 
@@ -30,7 +31,7 @@ from .._search import (
 from .._solution import RESULTS
 from .backtracking import BacktrackingArmijo
 from .gauss_newton import NewtonDescent
-from .zoom import Zoom
+from .zoom import Zoom, ZoomState
 
 
 v_tree_dot = jax.vmap(tree_dot, in_axes=(0, None), out_axes=0)
@@ -1030,7 +1031,26 @@ class AbstractQuasiNewton(
         )
 
         def accepted(descent_state):
-            grad = lin_to_grad(lin_fn, state.y_eval, autodiff_mode=autodiff_mode)
+            # TODO maybe a more general solution?
+            # SearchState could have an interface for providing the gradient or not
+            if isinstance(search_state, ZoomState):
+                _eval_grad_fn = ft.partial(
+                    lin_to_grad,
+                    lin_fn=lin_fn,
+                    y_eval=state.y_eval,
+                    autodiff_mode=autodiff_mode,
+                )
+
+                _reuse_grad_fn = lambda: search_state.current_point.grad
+
+                grad = jax.lax.cond(
+                    state.first_step,
+                    _eval_grad_fn,
+                    _reuse_grad_fn,
+                )
+
+            else:
+                grad = lin_to_grad(lin_fn, state.y_eval, autodiff_mode=autodiff_mode)
 
             f_eval_info, hessian_update_state = self.hessian_update(
                 y,
