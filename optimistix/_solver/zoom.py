@@ -56,8 +56,8 @@ def optax_cubicmin(
     Cubic interpolation. Adapted from Optax. Optax docs follow:
 
     Finds a critical point of a cubic polynomial
-    p(x) = A *(x-a)^3 + B*(x-a)^2 + C*(x-a) + D, that goes through
-    the points (a,value_a), (b,value_b), and (c,value_c) with derivative at a of slope_a.
+    p(x) = A *(x-a)^3 + B*(x-a)^2 + C*(x-a) + D, that goes through the
+    points (a,value_a), (b,value_b), and (c,value_c) with derivative at a of slope_a.
     May return NaN (if radical<0), in that case, the point will be ignored.
     Adapted from scipy.optimize._linesearch.py.
 
@@ -932,6 +932,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         # then try backpedaling to the safe step
         # and propose that instead so that we take one more step with it
         # which will be accepted by _safe_step
+        # on the next iteration
         state = jax.lax.cond(
             ~accept & state.failed & (state.safe_stepsize > 0.0),
             Zoom._replace_step_with_safe,
