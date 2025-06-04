@@ -507,7 +507,7 @@ class BFGS(AbstractQuasiNewton[Y, Aux, _Hessian]):
     atol: float
     norm: Callable[[PyTree], Scalar]
     descent: NewtonDescent
-    search: BacktrackingArmijo
+    search: AbstractSearch
     hessian_update: AbstractQuasiNewtonUpdate
     use_inverse: bool
     verbose: frozenset[str]
@@ -519,6 +519,7 @@ class BFGS(AbstractQuasiNewton[Y, Aux, _Hessian]):
         norm: Callable[[PyTree], Scalar] = max_norm,
         use_inverse: bool = True,
         verbose: frozenset[str] = frozenset(),
+        search: AbstractSearch = Zoom(),
     ):
         self.rtol = rtol
         self.atol = atol
@@ -526,7 +527,7 @@ class BFGS(AbstractQuasiNewton[Y, Aux, _Hessian]):
         self.use_inverse = use_inverse
         self.descent = NewtonDescent(linear_solver=lx.Cholesky())
         # TODO(raderj): switch out `BacktrackingArmijo` with a better line search.
-        self.search = BacktrackingArmijo()
+        self.search = search
         self.hessian_update = BFGSUpdate(use_inverse=use_inverse)
         self.verbose = verbose
 
