@@ -5,7 +5,7 @@ from typing import Generic, Union
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Bool, Float, Int, Scalar, PyTree
+from jaxtyping import Array, Bool, Float, Int, PyTree, Scalar
 
 from .._custom_types import Y
 from .._misc import lin_to_grad, tree_dot, tree_full_like, tree_where
@@ -143,19 +143,6 @@ def interpolate(
     a_j = jnp.where(middle_quad_valid, middle_quad, a_j)
     a_j = jnp.where(middle_cubic_valid, middle_cubic, a_j)
 
-    # jax.debug.print("interpolating")
-    # jax.debug.print(
-    #    "lo {}, value_lo {}, slope_lo {}, hi {}, value_hi {}, cubic_ref {}, value_cubic_ref {}",
-    #    lo,
-    #    value_lo,
-    #    slope_lo,
-    #    hi,
-    #    value_hi,
-    #    cubic_ref,
-    #    value_cubic_ref,
-    # )
-    # jax.debug.print("{}, {}", middle_cubic, middle_quad)
-
     return a_j
 
 
@@ -243,7 +230,6 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         Replace the stepsize stored in `state` with the safe stepsize.
         Invoked if the search failed.
         """
-        # jax.debug.print("Setting to safe stepsize: {}", state.safe_stepsize)
         state = eqx.tree_at(
             lambda s: (s.stepsize, s.current_point, s.current_slope),
             state,
@@ -341,9 +327,6 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         computations without errors.
         """
         del f_info_struct
-
-        if self.verbose:
-            jax.debug.print("Doing empty init")
 
         _slope_init = jnp.array(-jnp.inf)
         init_point = PointEvalGrad(y, jnp.array(jnp.inf), tree_full_like(y, jnp.inf))
@@ -472,9 +455,6 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         stepsize_middle = state.y_eval_stepsize
         point_middle = PointEvalGrad(y_eval, f_eval_info.f, y_eval_grad)
         slope_middle = point_middle.compute_grad_dot(state.descent_direction)
-        # jax.debug.print("descent_direction for slope_middle: {}", state.descent_direction)
-        # jax.debug.print("grad for slope_middle: {}", point_middle.grad)
-        # jax.debug.print("slope_middle: {}", slope_middle)
 
         # check conditions for the middle point
         middle_satisf_decrease = self.decrease_condition_with_approx(
@@ -631,13 +611,6 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         new_stepsize = state.y_eval_stepsize
         new_point = PointEvalGrad(y_eval, f_eval_info.f, y_eval_grad)
         slope_at_new_point = new_point.compute_grad_dot(state.descent_direction)
-
-        # jax.debug.print("params_init in _search_interval: {}", y)
-        # jax.debug.print("y_eval in _search_interval: {}", y_eval)
-        # jax.debug.print("y_eval's value in _search_interval: {}", new_point.value)
-        # jax.debug.print("descent_direction in _search_interval: {}", state.descent_direction)
-        # jax.debug.print("grad_at_new_point: {}", new_point.grad)
-        # jax.debug.print("slope_at_new_point: {}", slope_at_new_point)
 
         reached_max_stepsize = new_stepsize >= self.max_stepsize
 
@@ -958,6 +931,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             proposed_stepsize,
         )
         # TODO what if we fail and the safe stepsize is not valid?
+        # Maybe don't return RESULTS.successful?
         if self.verbose:
             _cond_print(
                 ~accept & state.failed & (state.safe_stepsize <= 0.0),
