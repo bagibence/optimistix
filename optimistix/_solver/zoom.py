@@ -4,10 +4,10 @@ import operator
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Bool, Float, Int, Scalar
+from jaxtyping import Array, Bool, Float, Int, Scalar, PyTree
 
 from .._custom_types import Y
-from .._misc import lin_to_grad, tree_dot, tree_full_like
+from .._misc import lin_to_grad, tree_dot, tree_full_like, tree_where
 from .._search import _FnEvalInfo, _FnInfo, AbstractSearch
 from .._solution import RESULTS
 
@@ -145,25 +145,27 @@ def interpolate(
     return a_j
 
 
-def tree_where(cond, candidate, default):
-    def _set_val(x, y):
-        return jnp.where(cond, x, y)
-
-    return jax.tree.map(_set_val, candidate, default)
-
-
-def tree_sub(tree_x, tree_y):
+def tree_sub(tree_x: PyTree, tree_y: PyTree) -> PyTree:
+    """
+    Perform `tree_x - tree_y` leafwise
+    """
     return jax.tree.map(operator.sub, tree_x, tree_y)
 
 
-# like FunctionInfo.Eval, just including the location
 class PointEval(eqx.Module, strict=True):
+    """
+    Like FunctionInfo.Eval, just including the location.
+    """
+
     location: jax.Array
     value: FloatScalar
 
 
-# like FunctionInfo.EvalGrad, just including the location
 class PointEvalGrad(eqx.Module, strict=True):
+    """
+    Like FunctionInfo.EvalGrad, just including the location
+    """
+
     location: jax.Array
     value: FloatScalar
     grad: jax.Array
