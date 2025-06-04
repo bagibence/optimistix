@@ -327,12 +327,13 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         Initialize some things to inf to avoid uninitialized values leaking into
         computations without errors.
         """
+        del f_info_struct
+
         if self.verbose:
             jax.debug.print("Doing empty init")
 
         _slope_init = jnp.array(-jnp.inf)
         init_point = PointEvalGrad(y, jnp.array(jnp.inf), tree_full_like(y, jnp.inf))
-        init_stepsize = jnp.array(-jnp.inf)
 
         return ZoomState(
             ls_iter_num=jnp.array(0),
@@ -447,6 +448,8 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         Attempt to find an acceptable stepsize in the interval (state.lo, state.lo),
         and shrink the interval if not found yet.
         """
+        del y, f_info
+
         if self.verbose:
             jax.debug.print(
                 "Zooming into interval: ({}, {})", state.stepsize_lo, state.stepsize_hi
@@ -609,6 +612,8 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         """
         Look for interval to zoom into.
         """
+        del y, f_info
+
         # evaluate the slope along the descent direction for the new stepsize
         new_stepsize = state.y_eval_stepsize
         new_point = PointEvalGrad(y_eval, f_eval_info.f, y_eval_grad)
