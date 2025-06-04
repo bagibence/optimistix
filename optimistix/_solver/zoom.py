@@ -52,7 +52,7 @@ def optax_cubicmin(
     value_c: FloatScalar,
 ) -> FloatScalar:
     """
-    Cubic interpolation. Adapted from Optax.
+    Cubic interpolation. Adapted from Optax. Optax docs follow:
 
     Finds a critical point of a cubic polynomial
     p(x) = A *(x-a)^3 + B*(x-a)^2 + C*(x-a) + D, that goes through
@@ -157,13 +157,13 @@ def tree_sub(tree_x, tree_y):
 
 
 # like FunctionInfo.Eval, just including the location
-class PointEval(eqx.Module):
+class PointEval(eqx.Module, strict=True):
     location: jax.Array
     value: FloatScalar
 
 
 # like FunctionInfo.EvalGrad, just including the location
-class PointEvalGrad(eqx.Module):
+class PointEvalGrad(eqx.Module, strict=True):
     location: jax.Array
     value: FloatScalar
     grad: jax.Array
@@ -175,7 +175,7 @@ class PointEvalGrad(eqx.Module):
         return PointEval(self.location, self.value)
 
 
-class ZoomState(eqx.Module):
+class ZoomState(eqx.Module, strict=True):
     # number of iterations in the current linesearch
     ls_iter_num: IntScalar
     # point where the linesearch is anchored
