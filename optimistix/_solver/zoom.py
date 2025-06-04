@@ -152,17 +152,6 @@ def tree_where(cond, candidate, default):
     return jax.tree.map(_set_val, candidate, default)
 
 
-# copied from optax.tree_utils
-def tree_add_scale(tree_x, scalar, tree_y):
-    scalar = jnp.asarray(scalar)
-    return jax.tree.map(
-        lambda x, y: None if x is None else x + scalar.astype(x.dtype) * y,
-        tree_x,
-        tree_y,
-        is_leaf=lambda x: x is None,
-    )
-
-
 def tree_sub(tree_x, tree_y):
     return jax.tree.map(operator.sub, tree_x, tree_y)
 
