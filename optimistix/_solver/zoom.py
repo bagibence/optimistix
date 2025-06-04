@@ -1,6 +1,6 @@
 import functools as ft
 import operator
-from typing import Generic
+from typing import Generic, Union
 
 import equinox as eqx
 import jax
@@ -9,12 +9,25 @@ from jaxtyping import Array, Bool, Float, Int, Scalar, PyTree
 
 from .._custom_types import Y
 from .._misc import lin_to_grad, tree_dot, tree_full_like, tree_where
-from .._search import _FnEvalInfo, _FnInfo, AbstractSearch
+from .._search import AbstractSearch, FunctionInfo
 from .._solution import RESULTS
 
 
 IntScalar = Int[Scalar, ""]
 FloatScalar = Float[Scalar, ""]
+
+# Defining these instead of importing from _search
+_FnInfo = Union[
+    FunctionInfo.EvalGrad,
+    FunctionInfo.EvalGradHessian,
+    FunctionInfo.EvalGradHessianInv,
+]
+_FnEvalInfo = Union[
+    FunctionInfo.Eval,
+    FunctionInfo.EvalGrad,
+    FunctionInfo.EvalGradHessian,
+    FunctionInfo.EvalGradHessianInv,
+]
 
 
 def _cond_print(condition, message, **kwargs):
@@ -178,15 +191,15 @@ class PointEvalGrad(eqx.Module, Generic[Y], strict=True):
         return PointEval(self.location, self.value)
 
 
-class ZoomState(eqx.Module, strict=True):
+class ZoomState(eqx.Module, Generic[Y], strict=True):
     # number of iterations in the current linesearch
     ls_iter_num: IntScalar
     # point where the linesearch is anchored
-    init_point: PointEvalGrad
+    init_point: PointEvalGrad[Y]
     slope_init: FloatScalar
     # last evaluated point
     stepsize: FloatScalar
-    current_point: PointEvalGrad
+    current_point: PointEvalGrad[Y]
     current_slope: FloatScalar
     # diagnostics for control flow
     interval_found: Bool
@@ -194,21 +207,21 @@ class ZoomState(eqx.Module, strict=True):
     failed: Bool
     # interval to zoom into
     stepsize_lo: FloatScalar
-    point_lo: PointEvalGrad
+    point_lo: PointEvalGrad[Y]
     slope_lo: FloatScalar
     stepsize_hi: FloatScalar
     point_hi: PointEval
     # used for the cubic interpolation
     cubic_ref_stepsize: FloatScalar
-    cubic_ref_point: PointEval
+    cubic_ref_point: PointEval[Y]
     # fallback stepsize that satisfies at least the decrease condition
     safe_stepsize: FloatScalar
-    safe_point: PointEvalGrad
+    safe_point: PointEvalGrad[Y]
     safe_slope: FloatScalar
     # used to keep track of the stepsized used for the currently evaluated point
     y_eval_stepsize: FloatScalar
     # descent direction we are taking the steps in from init_point
-    descent_direction: jax.Array
+    descent_direction: Y
 
 
 class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
@@ -607,7 +620,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         f_info,
         f_eval_info,
         y_eval_grad,
-        state,
+        state: ZoomState,
     ):
         """
         Look for interval to zoom into.
