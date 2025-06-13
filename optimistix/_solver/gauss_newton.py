@@ -269,12 +269,17 @@ class AbstractGaussNewton(
         jac = eqx.combine(dynamic, static)
         f_eval_info = eqx.tree_at(lambda f: f.jac, f_eval_info, jac)
 
+        # pass identity function to satisfy AbstractSearch.step's signature
+        lin_fn = lambda x: x
+
         step_size, accept, search_result, search_state = self.search.step(
             state.first_step,
             y,
             state.y_eval,
             state.f_info,
             f_eval_info,
+            lin_fn,
+            options,
             state.search_state,
         )
         num_steps = state.num_steps + 1
