@@ -287,6 +287,10 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         """
         # init_point is where stepsize = 0
         descent_direction = tree_sub(y_eval, init_point.location)
+        descent_direction = jax.tree.map(
+            lambda x: x / y_eval_stepsize,
+            descent_direction,
+        )
         _slope_init = init_point.compute_grad_dot(descent_direction)
 
         return ZoomState(
