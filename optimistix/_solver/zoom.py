@@ -638,7 +638,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         )
 
         # There are two conditions when we say we found an interval
-        found_a = (~decrease_satisfied) | (value_increased & state.ls_iter_num > 0)
+        found_a = (~decrease_satisfied) | (value_increased & (state.ls_iter_num > 0))
         found_b = (~found_a) & (~curvature_satisfied) & (slope_at_new_point >= 0)
         interval_found = found_a | found_b
 
