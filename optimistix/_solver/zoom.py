@@ -15,6 +15,7 @@ from .._solution import RESULTS
 
 IntScalar = Int[Scalar, ""]
 FloatScalar = Float[Scalar, ""]
+BoolScalar = Bool[Scalar, ""]
 
 # Defining these instead of importing from _search
 _FnInfo = Union[
@@ -189,9 +190,9 @@ class ZoomState(eqx.Module, Generic[Y], strict=True):
     current_point: PointEvalGrad[Y]
     current_slope: FloatScalar
     # diagnostics for control flow
-    interval_found: Bool
-    done: Bool
-    failed: Bool
+    interval_found: BoolScalar
+    done: BoolScalar
+    failed: BoolScalar
     # interval to zoom into
     stepsize_lo: FloatScalar
     point_lo: PointEvalGrad[Y]
@@ -412,7 +413,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
         slope_step: FloatScalar,
         value_init: FloatScalar,
         slope_init: FloatScalar,
-    ) -> FloatScalar:
+    ) -> BoolScalar:
         """
         Evaluate the Armijo decrease condition, with an optional approximation
         if `c3` is set.
@@ -432,14 +433,16 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
 
     def curvature_condition(
         self, slope_at_new_point: FloatScalar, slope_init: FloatScalar
-    ) -> FloatScalar:
+    ) -> BoolScalar:
         """
         Evaluate the strong Wolfe curvature condition.
         """
         curv_error = jnp.abs(slope_at_new_point) - self.c2 * jnp.abs(slope_init)
         return curv_error <= 0.0
 
-    def _zoom_into_interval(self, y, y_eval, f_info, f_eval_info, y_eval_grad, state):
+    def _zoom_into_interval(
+        self, y, y_eval, f_info, f_eval_info, y_eval_grad, state
+    ) -> ZoomState:
         """
         Attempt to find an acceptable stepsize in the interval (state.lo, state.lo),
         and shrink the interval if not found yet.
