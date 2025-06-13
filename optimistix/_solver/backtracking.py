@@ -6,7 +6,6 @@ from equinox.internal import ω
 from jaxtyping import Array, Bool, Scalar, ScalarLike
 
 from .._custom_types import Y
-from .._misc import lin_to_grad, tree_dot
 from .._search import AbstractSearch, FunctionInfo
 from .._solution import RESULTS
 
@@ -116,67 +115,3 @@ BacktrackingArmijo.__init__.__doc__ = """**Arguments:**
 - `step_init`: The first `step_size` the backtracking algorithm will
     try. Must be greater than 0.
 """
-
-
-class StrongWolfeBacktracking(
-    AbstractSearch[Y, _FnInfo, _FnEvalInfo, _BacktrackingState], strict=True
-):
-    decrease_factor: ScalarLike = 0.8
-    slope_rtol: ScalarLike = 1e-4
-    curv_rtol: ScalarLike = 0.9
-    step_init: ScalarLike = 1.0
-
-    def init(self, y, f_info_struct):
-        del y, f_info_struct
-        return _BacktrackingState(jnp.array(self.step_init))
-
-    def step(self, first_step, y, y_eval, f_info, f_eval_info, lin_fn, options, state):
-        if not isinstance(
-            f_info,
-            (
-                FunctionInfo.EvalGrad,
-                FunctionInfo.EvalGradHessian,
-                FunctionInfo.EvalGradHessianInv,
-                FunctionInfo.ResidualJac,
-            ),
-        ):
-            raise ValueError(
-                "Cannot use `BacktrackingArmijo` with this solver. This is because "
-                "`BacktrackingArmijo` requires gradients of the target function, but "
-                "this solver does not evaluate such gradients."
-            )
-
-        y_diff = (y_eval**ω - y**ω).ω
-        predicted_reduction = f_info.compute_grad_dot(y_diff)
-        # Terminate when the Armijo condition is satisfied. That is, `fn(y_eval)`
-        # must do better than its linear approximation:
-        # `fn(y_eval) < fn(y) + grad•y_diff`
-        f_min = f_info.as_min()
-        f_min_eval = f_eval_info.as_min()
-        satisfies_armijo = f_min <= f_min_eval + self.slope_rtol * predicted_reduction
-        has_reduction = predicted_reduction <= 0
-
-        slope_init = predicted_reduction  # already calculated
-        # slope_step = f_eval_info.compute_grad_dot(y_diff)
-        # the above is not possible because f_info is FunctionInfo.Eval, so it doesn't store gradient info
-        # instead I'm passing the lin_fn and options to evaluate the gradient here
-        grad_eval = lin_to_grad(
-            lin_fn, y_eval, autodiff_mode=options.get("autodiff_mode", "bwd")
-        )
-        slope_step = tree_dot(grad_eval, y_diff)
-        satisfies_curvature = jnp.abs(slope_step) <= self.curv_rtol * jnp.abs(
-            slope_init
-        )
-
-        accept = first_step | (satisfies_armijo & satisfies_curvature & has_reduction)
-        step_size = jnp.where(
-            accept, self.step_init, self.decrease_factor * state.step_size
-        )
-        step_size = cast(Scalar, step_size)
-
-        return (
-            step_size,
-            accept,
-            RESULTS.successful,
-            _BacktrackingState(step_size=step_size),
-        )
