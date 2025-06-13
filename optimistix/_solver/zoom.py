@@ -120,7 +120,6 @@ def interpolate(
     Find a stepsize by minimizing the cubic or quadratic curve fitted to
     `lo`, `hi`, and `cubic_ref`.
     """
-    # Check if interval not too small otherwise fail
     # adapted from optax
     delta = jnp.abs(hi - lo)
     left = jnp.minimum(hi, lo)
@@ -854,9 +853,6 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
             _regular_step_fn,
             state,
         )
-
-        # TODO do I need this?
-        # accept = accept | state.done | state.failed
 
         return accept, state
 
