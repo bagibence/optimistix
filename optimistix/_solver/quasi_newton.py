@@ -1185,7 +1185,7 @@ class BFGS(AbstractQuasiNewton[Y, Aux, _Hessian], strict=True):
         norm: Callable[[PyTree], Scalar] = max_norm,
         use_inverse: bool = True,
         verbose: frozenset[str] = frozenset(),
-        search: AbstractSearch = Zoom(),
+        search: AbstractSearch = Zoom(initial_guess_strategy="one"),
     ):
         self.rtol = rtol
         self.atol = atol
@@ -1322,7 +1322,7 @@ class LBFGS(AbstractQuasiNewton[Y, Aux, _Hessian], strict=True):
         norm: Callable[[PyTree], Scalar] = max_norm,
         use_inverse: bool = True,
         history_length: int = 10,
-        search: AbstractSearch = Zoom(),
+        search: AbstractSearch = Zoom(initial_guess_strategy="one"),
         verbose: frozenset[str] = frozenset(),
     ):
         self.rtol = rtol
