@@ -1,6 +1,6 @@
 import functools as ft
 import operator
-from typing import Generic, Union
+from typing import Generic, TypeAlias
 
 import equinox as eqx
 import jax
@@ -18,17 +18,17 @@ FloatScalar = Float[Scalar, ""]
 BoolScalar = Bool[Scalar, ""]
 
 # Defining these instead of importing from _search
-_FnInfo = Union[
-    FunctionInfo.EvalGrad,
-    FunctionInfo.EvalGradHessian,
-    FunctionInfo.EvalGradHessianInv,
-]
-_FnEvalInfo = Union[
-    FunctionInfo.Eval,
-    FunctionInfo.EvalGrad,
-    FunctionInfo.EvalGradHessian,
-    FunctionInfo.EvalGradHessianInv,
-]
+_FnInfo: TypeAlias = (
+    FunctionInfo.EvalGrad
+    | FunctionInfo.EvalGradHessian
+    | FunctionInfo.EvalGradHessianInv
+)
+_FnEvalInfo: TypeAlias = (
+    FunctionInfo.Eval
+    | FunctionInfo.EvalGrad
+    | FunctionInfo.EvalGradHessian
+    | FunctionInfo.EvalGradHessianInv
+)
 
 
 def _cond_print(condition, message, **kwargs):
@@ -153,7 +153,7 @@ def tree_sub(tree_x: PyTree, tree_y: PyTree) -> PyTree:
     return jax.tree.map(operator.sub, tree_x, tree_y)
 
 
-class PointEval(eqx.Module, Generic[Y], strict=True):
+class PointEval(eqx.Module, Generic[Y]):
     """
     Like FunctionInfo.Eval, just including the location.
     """
@@ -162,7 +162,7 @@ class PointEval(eqx.Module, Generic[Y], strict=True):
     value: FloatScalar
 
 
-class PointEvalGrad(eqx.Module, Generic[Y], strict=True):
+class PointEvalGrad(eqx.Module, Generic[Y]):
     """
     Like FunctionInfo.EvalGrad, just including the location
     """
@@ -178,7 +178,7 @@ class PointEvalGrad(eqx.Module, Generic[Y], strict=True):
         return PointEval(self.location, self.value)
 
 
-class ZoomState(eqx.Module, Generic[Y], strict=True):
+class ZoomState(eqx.Module, Generic[Y]):
     # number of iterations in the current linesearch
     ls_iter_num: IntScalar
     # point where the linesearch is anchored
@@ -211,7 +211,7 @@ class ZoomState(eqx.Module, Generic[Y], strict=True):
     descent_direction: Y
 
 
-class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState], strict=True):
+class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState]):
     # TODO decide on defaults
     c1: float = 1e-4
     c2: float = 0.9
