@@ -29,7 +29,6 @@ from .._search import (
     FunctionInfo,
 )
 from .._solution import RESULTS
-from .backtracking import BacktrackingArmijo
 from .gauss_newton import NewtonDescent
 from .zoom import Zoom, ZoomState
 
@@ -136,7 +135,8 @@ class _AbstractBFGSDFPUpdate(AbstractQuasiNewtonUpdate):
         grad_diff: PyTree,
         y_diff: PyTree,
         f_info: FunctionInfo.EvalGradHessian | FunctionInfo.EvalGradHessianInv,
-    ) -> lx.PyTreeLinearOperator: ...
+    ) -> lx.PyTreeLinearOperator:
+        ...
 
     def __call__(
         self,
@@ -578,7 +578,7 @@ class DFP(AbstractQuasiNewton[Y, Aux, _Hessian]):
     atol: float
     norm: Callable[[PyTree], Scalar]
     descent: NewtonDescent
-    search: BacktrackingArmijo
+    search: AbstractSearch
     hessian_update: AbstractQuasiNewtonUpdate
     use_inverse: bool
     verbose: frozenset[str]
@@ -590,14 +590,14 @@ class DFP(AbstractQuasiNewton[Y, Aux, _Hessian]):
         norm: Callable[[PyTree], Scalar] = max_norm,
         use_inverse: bool = True,
         verbose: frozenset[str] = frozenset(),
+        search: AbstractSearch = Zoom(initial_guess_strategy="one"),
     ):
         self.rtol = rtol
         self.atol = atol
         self.norm = norm
         self.use_inverse = use_inverse
         self.descent = NewtonDescent(linear_solver=lx.Cholesky())
-        # TODO(raderj): switch out `BacktrackingArmijo` with a better line search.
-        self.search = BacktrackingArmijo()
+        self.search = search
         self.hessian_update = DFPUpdate(use_inverse=use_inverse)
         self.verbose = verbose
 
