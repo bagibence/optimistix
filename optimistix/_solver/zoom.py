@@ -23,7 +23,6 @@ _FnInfo: TypeAlias = (
     | FunctionInfo.EvalGradHessian
     | FunctionInfo.EvalGradHessianInv
 )
-_FnEvalInfo: TypeAlias = FunctionInfo.EvalGrad
 
 
 def _cond_print(condition, message, **kwargs):
@@ -206,7 +205,7 @@ class ZoomState(eqx.Module, Generic[Y]):
     descent_direction: Y
 
 
-class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState]):
+class Zoom(AbstractSearch[Y, _FnInfo, FunctionInfo.EvalGrad, ZoomState]):
     # TODO decide on defaults
     c1: float = 1e-4
     c2: float = 0.9
@@ -712,7 +711,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState]):
         y: Y,
         y_eval: Y,
         f_info: _FnInfo,
-        f_eval_info: _FnEvalInfo,
+        f_eval_info: FunctionInfo.EvalGrad,
         state: ZoomState,
     ):
         """
@@ -728,7 +727,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState]):
         y: Y,
         y_eval: Y,
         f_info: _FnInfo,
-        f_eval_info: _FnEvalInfo,
+        f_eval_info: FunctionInfo.EvalGrad,
         state: ZoomState,
     ):
         """
@@ -744,7 +743,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState]):
         y: Y,
         y_eval: Y,
         f_info: _FnInfo,
-        f_eval_info: _FnEvalInfo,
+        f_eval_info: FunctionInfo.EvalGrad,
         state: ZoomState,
     ):
         """
@@ -795,7 +794,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState]):
         y: Y,
         y_eval: Y,
         f_info: _FnInfo,
-        f_eval_info: _FnEvalInfo,
+        f_eval_info: FunctionInfo.EvalGrad,
         state: ZoomState,
     ):
         """
@@ -839,7 +838,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState]):
         y: Y,
         y_eval: Y,
         f_info: _FnInfo,
-        f_eval_info: _FnEvalInfo,
+        f_eval_info: FunctionInfo.EvalGrad,
         state: ZoomState,
     ):
         """
@@ -861,6 +860,11 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState]):
             - propose the (hopefully safe) stepsize to be accepted in the next
             iteration by _safe_step
         """
+        if not isinstance(f_eval_info, FunctionInfo.EvalGrad):
+            raise TypeError(
+                "Variable `f_eval_info` needs to be of type `FunctionInfo.EvalGrad`"
+            )
+
         _fake_first_step_fn = ft.partial(
             self.fake_first_step, y, y_eval, f_info, f_eval_info
         )
