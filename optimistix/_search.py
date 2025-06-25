@@ -320,6 +320,8 @@ class AbstractSearch(eqx.Module, Generic[Y, _FnInfo, _FnEvalInfo, SearchState]):
     See [this documentation](./introduction.md) for more information.
     """
 
+    _needs_grad_at_y_eval: ClassVar[bool]
+
     @abc.abstractmethod
     def init(self, y: Y, f_info_struct: _FnInfo) -> SearchState:
         """Is called just once, at the very start of the entire optimisation problem.
@@ -345,8 +347,6 @@ class AbstractSearch(eqx.Module, Generic[Y, _FnInfo, _FnEvalInfo, SearchState]):
         y_eval: Y,
         f_info: _FnInfo,
         f_eval_info: _FnEvalInfo,
-        lin_fn,
-        options,
         state: SearchState,
     ) -> tuple[Scalar, Bool[Array, ""], RESULTS, SearchState]:
         """Performs a step within a search. For example, one step within a line search.

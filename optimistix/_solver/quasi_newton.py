@@ -1,5 +1,4 @@
 import abc
-import functools as ft
 from collections.abc import Callable
 from typing import Any, Generic, TypeVar
 
@@ -30,7 +29,7 @@ from .._search import (
 )
 from .._solution import RESULTS
 from .gauss_newton import NewtonDescent
-from .zoom import Zoom, ZoomState
+from .zoom import Zoom
 
 
 def _identity_pytree(pytree: PyTree[Array]) -> lx.PyTreeLinearOperator:
@@ -135,8 +134,7 @@ class _AbstractBFGSDFPUpdate(AbstractQuasiNewtonUpdate):
         grad_diff: PyTree,
         y_diff: PyTree,
         f_info: FunctionInfo.EvalGradHessian | FunctionInfo.EvalGradHessianInv,
-    ) -> lx.PyTreeLinearOperator:
-        ...
+    ) -> lx.PyTreeLinearOperator: ...
 
     def __call__(
         self,
@@ -368,44 +366,34 @@ class AbstractQuasiNewton(
         f_eval, lin_fn, aux_eval = jax.linearize(
             lambda _y: fn(_y, args), state.y_eval, has_aux=True
         )
+
+        if self.search._needs_grad_at_y_eval:
+            grad = lin_to_grad(lin_fn, state.y_eval, autodiff_mode)
+            f_eval_info = FunctionInfo.EvalGrad(f_eval, grad)
+        else:
+            f_eval_info = FunctionInfo.Eval(f_eval)
+
         step_size, accept, search_result, search_state = self.search.step(
             state.first_step,
             y,
             state.y_eval,
             state.f_info,
-            FunctionInfo.Eval(f_eval),
-            lin_fn,
-            options,
+            f_eval_info,
             state.search_state,
         )
 
         def accepted(descent_state):
-            # TODO maybe a more general solution?
-            # SearchState could have an interface for providing the gradient or not
-            if isinstance(search_state, ZoomState):
-                _eval_grad_fn = ft.partial(
-                    lin_to_grad,
-                    lin_fn=lin_fn,
-                    y_eval=state.y_eval,
-                    autodiff_mode=autodiff_mode,
-                )
+            nonlocal f_eval_info
 
-                _reuse_grad_fn = lambda: search_state.current_point.grad
-
-                grad = jax.lax.cond(
-                    state.first_step,
-                    _eval_grad_fn,
-                    _reuse_grad_fn,
-                )
-
-            else:
+            if not self.search._needs_grad_at_y_eval:
                 grad = lin_to_grad(lin_fn, state.y_eval, autodiff_mode=autodiff_mode)
+                f_eval_info = FunctionInfo.EvalGrad(f_eval, grad)
 
             f_eval_info = self.hessian_update(
                 y,
                 state.y_eval,
                 state.f_info,
-                FunctionInfo.EvalGrad(f_eval, grad),
+                f_eval_info,
             )
 
             descent_state = self.descent.query(

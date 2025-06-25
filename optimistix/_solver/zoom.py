@@ -1,6 +1,6 @@
 import functools as ft
 import operator
-from typing import Generic, TypeAlias
+from typing import ClassVar, Generic, TypeAlias
 
 import equinox as eqx
 import jax
@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, Bool, Float, Int, PyTree, Scalar
 
 from .._custom_types import Y
-from .._misc import lin_to_grad, tree_dot, tree_full_like, tree_where
+from .._misc import tree_dot, tree_full_like, tree_where
 from .._search import AbstractSearch, FunctionInfo
 from .._solution import RESULTS
 
@@ -23,12 +23,7 @@ _FnInfo: TypeAlias = (
     | FunctionInfo.EvalGradHessian
     | FunctionInfo.EvalGradHessianInv
 )
-_FnEvalInfo: TypeAlias = (
-    FunctionInfo.Eval
-    | FunctionInfo.EvalGrad
-    | FunctionInfo.EvalGradHessian
-    | FunctionInfo.EvalGradHessianInv
-)
+_FnEvalInfo: TypeAlias = FunctionInfo.EvalGrad
 
 
 def _cond_print(condition, message, **kwargs):
@@ -223,6 +218,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState]):
     min_stepsize: float = 1e-6
     maxls: int = 30
     verbose: bool = False
+    _needs_grad_at_y_eval: ClassVar[bool] = True
 
     @staticmethod
     def _replace_step_with_safe(state: ZoomState):
@@ -443,9 +439,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState]):
         curv_error = jnp.abs(slope_at_new_point) - self.c2 * jnp.abs(slope_init)
         return curv_error <= 0.0
 
-    def _zoom_into_interval(
-        self, y, y_eval, f_info, f_eval_info, y_eval_grad, state
-    ) -> ZoomState:
+    def _zoom_into_interval(self, y, y_eval, f_info, f_eval_info, state) -> ZoomState:
         """
         Attempt to find an acceptable stepsize in the interval (state.lo, state.lo),
         and shrink the interval if not found yet.
@@ -459,7 +453,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState]):
 
         # y_eval was created by taking state.y_eval_stepsize
         stepsize_middle = state.y_eval_stepsize
-        point_middle = PointEvalGrad(y_eval, f_eval_info.f, y_eval_grad)
+        point_middle = PointEvalGrad(y_eval, f_eval_info.f, f_eval_info.grad)
         slope_middle = point_middle.compute_grad_dot(state.descent_direction)
 
         # check conditions for the middle point
@@ -605,7 +599,6 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState]):
         y_eval: Y,
         f_info,
         f_eval_info,
-        y_eval_grad,
         state: ZoomState,
     ):
         """
@@ -615,7 +608,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState]):
 
         # evaluate the slope along the descent direction for the new stepsize
         new_stepsize = state.y_eval_stepsize
-        new_point = PointEvalGrad(y_eval, f_eval_info.f, y_eval_grad)
+        new_point = PointEvalGrad(y_eval, f_eval_info.f, f_eval_info.grad)
         slope_at_new_point = new_point.compute_grad_dot(state.descent_direction)
 
         reached_max_stepsize = new_stepsize >= self.max_stepsize
@@ -720,15 +713,13 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState]):
         y_eval: Y,
         f_info: _FnInfo,
         f_eval_info: _FnEvalInfo,
-        lin_fn,
-        options,
         state: ZoomState,
     ):
         """
         Only called once in the very beginning of the optimization.
         Just accepts the proposed random point.
         """
-        del y, y_eval, f_info, f_eval_info, lin_fn, options
+        del y, y_eval, f_info, f_eval_info
         accept = jnp.array(True)
         return accept, state
 
@@ -738,15 +729,13 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState]):
         y_eval: Y,
         f_info: _FnInfo,
         f_eval_info: _FnEvalInfo,
-        lin_fn,
-        options,
         state: ZoomState,
     ):
         """
         Called after the search fails and the safe stepsize is proposed,
         `y_eval` was created with that safe stepsize, so just accept it.
         """
-        del y, y_eval, f_info, f_eval_info, lin_fn, options
+        del y, y_eval, f_info, f_eval_info
         accept = jnp.array(True)
         return accept, state
 
@@ -756,8 +745,6 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState]):
         y_eval: Y,
         f_info: _FnInfo,
         f_eval_info: _FnEvalInfo,
-        lin_fn,
-        options: dict,
         state: ZoomState,
     ):
         """
@@ -768,17 +755,12 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState]):
         if self.verbose:
             jax.debug.print("Linesearch regular iter: {}", state.ls_iter_num)
 
-        y_eval_grad = lin_to_grad(
-            lin_fn, y_eval, autodiff_mode=options.get("autodiff_mode", "bwd")
-        )
-
         _zoom_fn = ft.partial(
             self._zoom_into_interval,
             y,
             y_eval,
             f_info,
             f_eval_info,
-            y_eval_grad,
         )
         _search_fn = ft.partial(
             self._search_interval,
@@ -786,7 +768,6 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState]):
             y_eval,
             f_info,
             f_eval_info,
-            y_eval_grad,
         )
 
         state = jax.lax.cond(
@@ -815,8 +796,6 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState]):
         y_eval: Y,
         f_info: _FnInfo,
         f_eval_info: _FnEvalInfo,
-        lin_fn,
-        options,
         state: ZoomState,
     ):
         """
@@ -841,11 +820,9 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState]):
         # if we failed on the previous iteration, y_eval was made with the safe stepsize
         # so just accept it with _safe_step
         # otherwise take a regular step
-        _safe_step_fn = ft.partial(
-            self._safe_step, y, y_eval, f_info, f_eval_info, lin_fn, options
-        )
+        _safe_step_fn = ft.partial(self._safe_step, y, y_eval, f_info, f_eval_info)
         _regular_step_fn = ft.partial(
-            self._regular_step, y, y_eval, f_info, f_eval_info, lin_fn, options
+            self._regular_step, y, y_eval, f_info, f_eval_info
         )
         accept, state = jax.lax.cond(
             state.failed,
@@ -863,8 +840,6 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState]):
         y_eval: Y,
         f_info: _FnInfo,
         f_eval_info: _FnEvalInfo,
-        lin_fn,
-        options,
         state: ZoomState,
     ):
         """
@@ -887,11 +862,9 @@ class Zoom(AbstractSearch[Y, _FnInfo, _FnEvalInfo, ZoomState]):
             iteration by _safe_step
         """
         _fake_first_step_fn = ft.partial(
-            self.fake_first_step, y, y_eval, f_info, f_eval_info, lin_fn, options
+            self.fake_first_step, y, y_eval, f_info, f_eval_info
         )
-        _step_fn = ft.partial(
-            self._step, y, y_eval, f_info, f_eval_info, lin_fn, options
-        )
+        _step_fn = ft.partial(self._step, y, y_eval, f_info, f_eval_info)
 
         accept, state = jax.lax.cond(
             first_step,

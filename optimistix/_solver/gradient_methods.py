@@ -170,21 +170,29 @@ class AbstractGradientDescent(AbstractMinimiser[Y, Aux, _GradientDescentState]):
         f_eval, lin_fn, aux_eval = jax.linearize(
             lambda _y: fn(_y, args), state.y_eval, has_aux=True
         )
+
+        if self.search._needs_grad_at_y_eval:
+            grad = lin_to_grad(lin_fn, state.y_eval, autodiff_mode)
+            f_eval_info = FunctionInfo.EvalGrad(f_eval, grad)
+        else:
+            f_eval_info = FunctionInfo.Eval(f_eval)
+
         step_size, accept, search_result, search_state = self.search.step(
             state.first_step,
             y,
             state.y_eval,
             state.f_info,
-            FunctionInfo.Eval(f_eval),
-            lin_fn,
-            options,
+            f_eval_info,
             state.search_state,
         )
 
         def accepted(descent_state):
-            grad = lin_to_grad(lin_fn, state.y_eval, autodiff_mode=autodiff_mode)
+            nonlocal f_eval_info
 
-            f_eval_info = FunctionInfo.EvalGrad(f_eval, grad)
+            if not self.search._needs_grad_at_y_eval:
+                grad = lin_to_grad(lin_fn, state.y_eval, autodiff_mode=autodiff_mode)
+                f_eval_info = FunctionInfo.EvalGrad(f_eval, grad)
+
             descent_state = self.descent.query(state.y_eval, f_eval_info, descent_state)
             y_diff = (state.y_eval**ω - y**ω).ω
             f_diff = (f_eval**ω - state.f_info.f**ω).ω
