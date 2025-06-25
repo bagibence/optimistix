@@ -1,6 +1,6 @@
 import abc
 from collections.abc import Callable
-from typing import Any, Generic, TypeVar
+from typing import Any, cast, Generic, TypeVar
 
 import equinox as eqx
 import jax
@@ -134,7 +134,8 @@ class _AbstractBFGSDFPUpdate(AbstractQuasiNewtonUpdate):
         grad_diff: PyTree,
         y_diff: PyTree,
         f_info: FunctionInfo.EvalGradHessian | FunctionInfo.EvalGradHessianInv,
-    ) -> lx.PyTreeLinearOperator: ...
+    ) -> lx.PyTreeLinearOperator:
+        ...
 
     def __call__(
         self,
@@ -318,7 +319,9 @@ class AbstractQuasiNewton(
     atol: AbstractVar[float]
     norm: AbstractVar[Callable[[PyTree], Scalar]]
     descent: AbstractVar[AbstractDescent[Y, _Hessian, Any]]
-    search: AbstractVar[AbstractSearch[Y, _Hessian, FunctionInfo.Eval, Any]]
+    search: AbstractVar[
+        AbstractSearch[Y, _Hessian, FunctionInfo.Eval | FunctionInfo.EvalGrad, Any]
+    ]
     hessian_update: AbstractVar[AbstractQuasiNewtonUpdate]
     verbose: AbstractVar[frozenset[str]]
 
@@ -388,6 +391,10 @@ class AbstractQuasiNewton(
             if not self.search._needs_grad_at_y_eval:
                 grad = lin_to_grad(lin_fn, state.y_eval, autodiff_mode=autodiff_mode)
                 f_eval_info = FunctionInfo.EvalGrad(f_eval, grad)
+
+            # tell the type checker that at this point
+            # f_eval_info is a FunctionInfo.EvalGrad
+            f_eval_info = cast(FunctionInfo.EvalGrad, f_eval_info)
 
             f_eval_info = self.hessian_update(
                 y,
