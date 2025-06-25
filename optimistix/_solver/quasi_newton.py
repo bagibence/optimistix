@@ -167,9 +167,9 @@ class _AbstractBFGSDFPUpdate(AbstractQuasiNewtonUpdate):
         )
         if self.use_inverse:
             # in this case `hessian` is the new inverse hessian
-            return FunctionInfo.EvalGradHessianInv(f_eval, grad, hessian)
+            return FunctionInfo.EvalGradHessianInv(y_eval, f_eval, grad, hessian)
         else:
-            return FunctionInfo.EvalGradHessian(f_eval, grad, hessian)
+            return FunctionInfo.EvalGradHessian(y_eval, f_eval, grad, hessian)
 
 
 class DFPUpdate(_AbstractBFGSDFPUpdate):
@@ -339,10 +339,10 @@ class AbstractQuasiNewton(
         grad = tree_full_like(y, 0)
         if self.hessian_update.use_inverse:
             hessian_inv = _identity_pytree(y)
-            f_info = FunctionInfo.EvalGradHessianInv(f, grad, hessian_inv)
+            f_info = FunctionInfo.EvalGradHessianInv(y, f, grad, hessian_inv)
         else:
             hessian = _identity_pytree(y)
-            f_info = FunctionInfo.EvalGradHessian(f, grad, hessian)
+            f_info = FunctionInfo.EvalGradHessian(y, f, grad, hessian)
         f_info_struct = eqx.filter_eval_shape(lambda: f_info)
         return _QuasiNewtonState(
             first_step=jnp.array(True),
@@ -372,9 +372,9 @@ class AbstractQuasiNewton(
 
         if self.search._needs_grad_at_y_eval:
             grad = lin_to_grad(lin_fn, state.y_eval, autodiff_mode)
-            f_eval_info = FunctionInfo.EvalGrad(f_eval, grad)
+            f_eval_info = FunctionInfo.EvalGrad(state.y_eval, f_eval, grad)
         else:
-            f_eval_info = FunctionInfo.Eval(f_eval)
+            f_eval_info = FunctionInfo.Eval(state.y_eval, f_eval)
 
         step_size, accept, search_result, search_state = self.search.step(
             state.first_step,
@@ -390,7 +390,7 @@ class AbstractQuasiNewton(
 
             if not self.search._needs_grad_at_y_eval:
                 grad = lin_to_grad(lin_fn, state.y_eval, autodiff_mode=autodiff_mode)
-                f_eval_info = FunctionInfo.EvalGrad(f_eval, grad)
+                f_eval_info = FunctionInfo.EvalGrad(state.y_eval, f_eval, grad)
 
             # tell the type checker that at this point
             # f_eval_info is a FunctionInfo.EvalGrad

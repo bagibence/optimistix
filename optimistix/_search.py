@@ -67,11 +67,12 @@ class FunctionInfo(eqx.Module):
 
 
 # NOT PUBLIC, despite lacking an underscore. This is so pyright gets the name right.
-class Eval(FunctionInfo):
+class Eval(FunctionInfo, Generic[Y]):
     """Has a `.f` attribute describing `fn(y)`. Used when no gradient information is
     available.
     """
 
+    at: Y
     f: Scalar
 
     def as_min(self):
@@ -85,6 +86,7 @@ class EvalGrad(FunctionInfo, Generic[Y]):
     minimisation problems. (E.g. gradient descent; nonlinear CG.)
     """
 
+    at: Y
     f: Scalar
     grad: Y
 
@@ -102,6 +104,7 @@ class EvalGradHessian(FunctionInfo, Generic[Y]):
     `fn` at `y`. Used with quasi-Newton minimisation algorithms, like BFGS.
     """
 
+    at: Y
     f: Scalar
     grad: Y
     hessian: lx.AbstractLinearOperator
@@ -119,6 +122,7 @@ class EvalGradHessianInv(FunctionInfo, Generic[Y]):
     inverse-Hessian instead. Has `.f` and `.grad` and `.hessian_inv` attributes.
     """
 
+    at: Y
     f: Scalar
     grad: Y
     hessian_inv: lx.AbstractLinearOperator
