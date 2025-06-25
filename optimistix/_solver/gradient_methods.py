@@ -146,7 +146,7 @@ class AbstractGradientDescent(AbstractMinimiser[Y, Aux, _GradientDescentState]):
         aux_struct: PyTree[jax.ShapeDtypeStruct],
         tags: frozenset[object],
     ) -> _GradientDescentState:
-        f_info = FunctionInfo.EvalGrad(jnp.zeros(f_struct.shape, f_struct.dtype), y)
+        f_info = FunctionInfo.EvalGrad(y, jnp.zeros(f_struct.shape, f_struct.dtype), y)
         f_info_struct = jax.eval_shape(lambda: f_info)
         return _GradientDescentState(
             first_step=jnp.array(True),
@@ -175,9 +175,9 @@ class AbstractGradientDescent(AbstractMinimiser[Y, Aux, _GradientDescentState]):
 
         if self.search._needs_grad_at_y_eval:
             grad = lin_to_grad(lin_fn, state.y_eval, autodiff_mode)
-            f_eval_info = FunctionInfo.EvalGrad(f_eval, grad)
+            f_eval_info = FunctionInfo.EvalGrad(state.y_eval, f_eval, grad)
         else:
-            f_eval_info = FunctionInfo.Eval(f_eval)
+            f_eval_info = FunctionInfo.Eval(state.y_eval, f_eval)
 
         step_size, accept, search_result, search_state = self.search.step(
             state.first_step,
@@ -193,7 +193,7 @@ class AbstractGradientDescent(AbstractMinimiser[Y, Aux, _GradientDescentState]):
 
             if not self.search._needs_grad_at_y_eval:
                 grad = lin_to_grad(lin_fn, state.y_eval, autodiff_mode=autodiff_mode)
-                f_eval_info = FunctionInfo.EvalGrad(f_eval, grad)
+                f_eval_info = FunctionInfo.EvalGrad(state.y_eval, f_eval, grad)
 
             f_eval_info = cast(FunctionInfo.EvalGrad, f_eval_info)
 
