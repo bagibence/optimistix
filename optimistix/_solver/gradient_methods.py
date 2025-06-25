@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from typing import Any, Generic, TypeAlias
+from typing import Any, cast, Generic, TypeAlias
 
 import equinox as eqx
 import jax
@@ -131,7 +131,9 @@ class AbstractGradientDescent(AbstractMinimiser[Y, Aux, _GradientDescentState]):
     norm: AbstractVar[Callable[[PyTree], Scalar]]
     descent: AbstractVar[AbstractDescent[Y, FunctionInfo.EvalGrad, Any]]
     search: AbstractVar[
-        AbstractSearch[Y, FunctionInfo.EvalGrad, FunctionInfo.Eval, Any]
+        AbstractSearch[
+            Y, FunctionInfo.EvalGrad, FunctionInfo.Eval | FunctionInfo.EvalGrad, Any
+        ]
     ]
 
     def init(
@@ -192,6 +194,8 @@ class AbstractGradientDescent(AbstractMinimiser[Y, Aux, _GradientDescentState]):
             if not self.search._needs_grad_at_y_eval:
                 grad = lin_to_grad(lin_fn, state.y_eval, autodiff_mode=autodiff_mode)
                 f_eval_info = FunctionInfo.EvalGrad(f_eval, grad)
+
+            f_eval_info = cast(FunctionInfo.EvalGrad, f_eval_info)
 
             descent_state = self.descent.query(state.y_eval, f_eval_info, descent_state)
             y_diff = (state.y_eval**ω - y**ω).ω
