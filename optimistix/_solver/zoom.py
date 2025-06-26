@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, Bool, Float, Int, PyTree, Scalar
 
 from .._custom_types import Y
-from .._misc import tree_full_like, tree_where
+from .._misc import tree_full_like, tree_where, verbose_print
 from .._search import AbstractSearch, FunctionInfo
 from .._solution import RESULTS
 
@@ -213,6 +213,19 @@ class ZoomState(eqx.Module, Generic[Y]):
 
 
 class Zoom(AbstractSearch[Y, _FnInfo, FunctionInfo.EvalGrad, ZoomState]):
+    """
+    Zoom linesearch.
+
+    Valid entries for `verbose` are:
+        - `accepted`: Print when accepting a stepsize.
+        - `failed`: Print if the linesearch failed and if the safe stepsize is valid.
+        - `linesearch_diagnostics`: Print deeper diagnostics such as which Wolfe
+        conditions are satisfied, the interval we're zooming into, if the interval
+        is too short, etc.
+        - `result_per_ls_iter`: Print linesearch iteration, the checked stepsize,
+        and if we're done or failed.
+    """
+
     # TODO decide on defaults
     c1: float = 1e-4
     c2: float = 0.9
@@ -223,7 +236,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, FunctionInfo.EvalGrad, ZoomState]):
     min_interval_length: float = 1e-6
     min_stepsize: float = 1e-6
     maxls: int = 30
-    verbose: bool = False
+    verbose: frozenset[str] = frozenset()
     _needs_grad_at_y_eval: ClassVar[bool] = True
 
     @staticmethod
@@ -454,11 +467,6 @@ class Zoom(AbstractSearch[Y, _FnInfo, FunctionInfo.EvalGrad, ZoomState]):
         """
         del y, f_info
 
-        if self.verbose:
-            jax.debug.print(
-                "Zooming into interval: ({}, {})", state.stepsize_lo, state.stepsize_hi
-            )
-
         # y_eval was created by taking state.y_eval_stepsize
         stepsize_middle = state.y_eval_stepsize
         point_middle = PointEvalGrad(y_eval, f_eval_info)
@@ -476,9 +484,12 @@ class Zoom(AbstractSearch[Y, _FnInfo, FunctionInfo.EvalGrad, ZoomState]):
             slope_middle, state.slope_init
         )
 
-        if self.verbose:
+        if "linesearch_diagnostics" in self.verbose:
             jax.debug.print(
-                "Middle is: {}\tDecrease: {}\tCurv: {}",
+                "Zooming into interval: ({}, {})", state.stepsize_lo, state.stepsize_hi
+            )
+            jax.debug.print(
+                "Middle is: {}\tDecrease: {}\tCurvature: {}",
                 stepsize_middle,
                 middle_satisf_decrease,
                 middle_satisf_curvature,
@@ -561,7 +572,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, FunctionInfo.EvalGrad, ZoomState]):
         )
         failed = presumably_failed & (~done)
 
-        if self.verbose:
+        if "linesearch_diagnostics" in self.verbose:
             _cond_print(
                 interval_too_short,
                 "Interval too short: ({ss_lo}, {ss_hi})",
@@ -634,6 +645,15 @@ class Zoom(AbstractSearch[Y, _FnInfo, FunctionInfo.EvalGrad, ZoomState]):
             slope_at_new_point, state.slope_init
         )
 
+        if "linesearch_diagnostics" in self.verbose:
+            jax.debug.print("Searching for interval.")
+            jax.debug.print(
+                "Checked stepsize: {}, Decrease: {}, Curvature: {}",
+                new_stepsize,
+                decrease_satisfied,
+                curvature_satisfied,
+            )
+
         # save this as the largest stepsize that satisfies the decrease condition
         new_safe_stepsize, new_safe_point, new_safe_slope = tree_where(
             decrease_satisfied,
@@ -666,16 +686,6 @@ class Zoom(AbstractSearch[Y, _FnInfo, FunctionInfo.EvalGrad, ZoomState]):
         )
 
         # TODO shouldn't we update the reference point?
-
-        # if self.verbose:
-        #    _cond_print(
-        #        decrease_satisfied, "Decrease satisfied for {ss}", ss=new_stepsize
-        #    )
-
-        # if self.verbose:
-        #    _cond_print(
-        #        curvature_satisfied, "Curvature satisfied for {ss}", ss=new_stepsize
-        #    )
 
         # from optax
         done = (decrease_satisfied & curvature_satisfied) | (
@@ -760,8 +770,8 @@ class Zoom(AbstractSearch[Y, _FnInfo, FunctionInfo.EvalGrad, ZoomState]):
         Dispatches to either _search_interval or _zoom_into_interval.
         Accepts `y_eval` if those set `state.done` to True.
         """
-        if self.verbose:
-            jax.debug.print("Linesearch regular iter: {}", state.ls_iter_num)
+        if "result_per_ls_iter" in self.verbose:
+            jax.debug.print("Zoom iter: {}", state.ls_iter_num)
 
         _zoom_fn = ft.partial(
             self._zoom_into_interval,
@@ -785,12 +795,11 @@ class Zoom(AbstractSearch[Y, _FnInfo, FunctionInfo.EvalGrad, ZoomState]):
             state,
         )
 
-        if self.verbose:
-            jax.debug.print(
-                "Checked {}. Done: {}. Failed: {}",
-                state.stepsize,
-                state.done,
-                state.failed,
+        if "result_per_ls_iter" in self.verbose:
+            verbose_print(
+                (True, "Checked", state.stepsize),
+                (True, "Done", state.done),
+                (True, "Failed", state.failed),
             )
 
         # only accept the stepsize we checked here if it's good
@@ -898,7 +907,7 @@ class Zoom(AbstractSearch[Y, _FnInfo, FunctionInfo.EvalGrad, ZoomState]):
             state,
         )
 
-        if self.verbose:
+        if "accepted" in self.verbose:
             _cond_print(accept & (~first_step), "Accepting {ss}", ss=state.stepsize)
 
         # if accepted, reset the linesearch iteration counter
@@ -933,10 +942,14 @@ class Zoom(AbstractSearch[Y, _FnInfo, FunctionInfo.EvalGrad, ZoomState]):
         )
         # TODO what if we fail and the safe stepsize is not valid?
         # Maybe don't return RESULTS.successful?
-        if self.verbose:
+        if "failed" in self.verbose:
             _cond_print(
                 ~accept & state.failed & (state.safe_stepsize <= 0.0),
-                "Failed and safe stepsize is zero",
+                "Failed and safe stepsize is invalid.",
+            )
+            _cond_print(
+                ~accept & state.failed & (state.safe_stepsize > 0.0),
+                "Failed but proposing safe stepsize.",
             )
 
         # write these into the state
