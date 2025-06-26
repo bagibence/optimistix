@@ -869,9 +869,21 @@ class Zoom(AbstractSearch[Y, _FnInfo, FunctionInfo.EvalGrad, ZoomState]):
             - propose the (hopefully safe) stepsize to be accepted in the next
             iteration by _safe_step
         """
+        if not isinstance(f_info, _FnInfo):
+            raise ValueError(
+                "Cannnot use `Zoom` with this solver."
+                "This is because `Zoom` requires the objective function's gradient"
+                "at the last accepted point (`y`)."
+                "In other words, the type of variable `f_info` needs to be"
+                f"one of {_FnInfo}.".replace(" | ", ", ")
+            )
         if not isinstance(f_eval_info, FunctionInfo.EvalGrad):
-            raise TypeError(
-                "Variable `f_eval_info` needs to be of type `FunctionInfo.EvalGrad`"
+            raise ValueError(
+                "Cannnot use `Zoom` with this solver."
+                "This is because `Zoom` requires the objective function's gradient"
+                "at the currently evaluated point (`y_eval`)."
+                "In other words, variable `f_eval_info` needs to be"
+                "of type `FunctionInfo.EvalGrad`."
             )
 
         _fake_first_step_fn = ft.partial(
