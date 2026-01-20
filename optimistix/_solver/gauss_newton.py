@@ -276,7 +276,7 @@ class AbstractGaussNewton(AbstractLeastSquaresSolver[Y, Out, Aux, _GaussNewtonSt
             descent_state = self.descent.query(state.y_eval, f_eval_info, descent_state)
             y_diff = (state.y_eval**ω - y**ω).ω
             f_diff = (f_eval_info.residual**ω - state.f_info.residual**ω).ω
-            terminate = cauchy_termination(
+            converged, diverged = cauchy_termination(
                 self.rtol,
                 self.atol,
                 self.norm,
@@ -285,12 +285,27 @@ class AbstractGaussNewton(AbstractLeastSquaresSolver[Y, Out, Aux, _GaussNewtonSt
                 f_eval_info.residual,
                 f_diff,
             )
-            return state.y_eval, f_eval_info, aux_eval, descent_state, terminate
+            terminate = converged | diverged
+            return (
+                state.y_eval,
+                f_eval_info,
+                aux_eval,
+                descent_state,
+                terminate,
+                diverged,
+            )
 
         def rejected(descent_state):
-            return y, state.f_info, state.aux, descent_state, jnp.array(False)
+            return (
+                y,
+                state.f_info,
+                state.aux,
+                descent_state,
+                jnp.array(False),
+                jnp.array(False),
+            )
 
-        y, f_info, aux, descent_state, terminate = filter_cond(
+        y, f_info, aux, descent_state, terminate, diverged = filter_cond(
             accept, accepted, rejected, state.descent_state
         )
 
@@ -330,6 +345,7 @@ class AbstractGaussNewton(AbstractLeastSquaresSolver[Y, Out, Aux, _GaussNewtonSt
         result = RESULTS.where(
             search_result == RESULTS.successful, descent_result, search_result
         )
+        result = RESULTS.where(diverged, RESULTS.nonlinear_divergence, result)
 
         state = _GaussNewtonState(
             first_step=jnp.array(False),

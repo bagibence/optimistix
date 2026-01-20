@@ -9,7 +9,7 @@ from jaxtyping import Array, Bool, Int, PyTree, Scalar
 
 from .._custom_types import Aux, Fn, Y
 from .._minimise import AbstractMinimiser
-from .._misc import cauchy_termination, check_params_diverged, max_norm, verbose_print
+from .._misc import cauchy_termination, max_norm, verbose_print
 from .._solution import RESULTS
 
 
@@ -18,6 +18,7 @@ class _OptaxState(eqx.Module):
     f: Scalar
     opt_state: Any
     terminate: Bool[Array, ""]
+    result: RESULTS
 
 
 class OptaxMinimiser(AbstractMinimiser[Y, Aux, _OptaxState]):
@@ -74,9 +75,12 @@ class OptaxMinimiser(AbstractMinimiser[Y, Aux, _OptaxState]):
     ) -> _OptaxState:
         del fn, args, options, aux_struct
         opt_state = self.optim.init(y)
-        maxval = jnp.array(jnp.finfo(f_struct.dtype).max, f_struct.dtype)
         return _OptaxState(
-            step=jnp.array(0), f=maxval, opt_state=opt_state, terminate=jnp.array(False)
+            step=jnp.array(0),
+            f=jnp.array(0.0, f_struct.dtype),
+            opt_state=opt_state,
+            terminate=jnp.array(False),
+            result=RESULTS.successful,
         )
 
     def step(
@@ -105,7 +109,7 @@ class OptaxMinimiser(AbstractMinimiser[Y, Aux, _OptaxState]):
             grads, state.opt_state, y, value=f, grad=grads, value_fn=_fn_for_optax
         )
         new_y = eqx.apply_updates(y, updates)
-        terminate = cauchy_termination(
+        converged, diverged = cauchy_termination(
             self.rtol,
             self.atol,
             self.norm,
@@ -114,8 +118,14 @@ class OptaxMinimiser(AbstractMinimiser[Y, Aux, _OptaxState]):
             f,
             f - state.f,
         )
+        terminate = converged | diverged
+        result = RESULTS.where(diverged, RESULTS.nonlinear_divergence, state.result)
         new_state = _OptaxState(
-            step=state.step + 1, f=f, opt_state=new_opt_state, terminate=terminate
+            step=state.step + 1,
+            f=f,
+            opt_state=new_opt_state,
+            terminate=terminate,
+            result=result,
         )
         return new_y, new_state, aux
 
@@ -130,11 +140,7 @@ class OptaxMinimiser(AbstractMinimiser[Y, Aux, _OptaxState]):
     ) -> tuple[Bool[Array, ""], RESULTS]:
         del fn, args, options
 
-        converged = state.terminate
-        diverged, result = check_params_diverged(y, RESULTS.successful)
-        terminate = converged | diverged
-
-        return terminate, result
+        return state.terminate, state.result
 
     def postprocess(
         self,

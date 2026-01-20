@@ -12,7 +12,6 @@ from .._custom_types import Aux, DescentState, Fn, Out, SearchState, Y
 from .._minimise import AbstractMinimiser
 from .._misc import (
     cauchy_termination,
-    check_params_diverged,
     filter_cond,
     lin_to_grad,
     max_norm,
@@ -187,18 +186,33 @@ class AbstractGradientDescent(AbstractMinimiser[Y, Aux, _GradientDescentState]):
             descent_state = self.descent.query(state.y_eval, f_eval_info, descent_state)
             y_diff = (state.y_eval**ω - y**ω).ω
             f_diff = (f_eval**ω - state.f_info.f**ω).ω
-            terminate = cauchy_termination(
+            converged, diverged = cauchy_termination(
                 self.rtol, self.atol, self.norm, state.y_eval, y_diff, f_eval, f_diff
             )
-            terminate = jnp.where(
-                state.first_step, jnp.array(False), terminate
-            )  # Skip termination on first step
-            return state.y_eval, f_eval_info, aux_eval, descent_state, terminate
+            converged = jnp.where(
+                state.first_step, jnp.array(False), converged
+            )  # Skip convergence on first step
+            terminate = converged | diverged
+            return (
+                state.y_eval,
+                f_eval_info,
+                aux_eval,
+                descent_state,
+                terminate,
+                diverged,
+            )
 
         def rejected(descent_state):
-            return y, state.f_info, state.aux, descent_state, jnp.array(False)
+            return (
+                y,
+                state.f_info,
+                state.aux,
+                descent_state,
+                jnp.array(False),
+                jnp.array(False),
+            )
 
-        y, f_info, aux, descent_state, terminate = filter_cond(
+        y, f_info, aux, descent_state, terminate, diverged = filter_cond(
             accept, accepted, rejected, state.descent_state
         )
 
@@ -208,6 +222,7 @@ class AbstractGradientDescent(AbstractMinimiser[Y, Aux, _GradientDescentState]):
             search_result == RESULTS.successful, descent_result, search_result
         )
 
+        result = RESULTS.where(diverged, RESULTS.nonlinear_divergence, result)
         state = _GradientDescentState(
             first_step=jnp.array(False),
             y_eval=y_eval,
@@ -229,11 +244,7 @@ class AbstractGradientDescent(AbstractMinimiser[Y, Aux, _GradientDescentState]):
         state: _GradientDescentState,
         tags: frozenset[object],
     ) -> tuple[Bool[Array, ""], RESULTS]:
-        converged = state.terminate
-        diverged, result = check_params_diverged(y, state.result)
-        terminate = converged | diverged
-
-        return terminate, result
+        return state.terminate, state.result
 
     def postprocess(
         self,

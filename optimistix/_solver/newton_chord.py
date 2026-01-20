@@ -166,7 +166,7 @@ class _AbstractNewtonChord(AbstractRootFinder[Y, Out, Aux, _NewtonChordState[Y]]
             # we're doing a root-find and know that we're aiming to get close to zero.
             # Note that this does mean that the `rtol` is ignored in f-space, and only
             # `atol` matters.
-            terminate = cauchy_termination(
+            converged, diverged = cauchy_termination(
                 self.rtol,
                 self.atol,
                 self.norm,
@@ -175,7 +175,12 @@ class _AbstractNewtonChord(AbstractRootFinder[Y, Out, Aux, _NewtonChordState[Y]]
                 jtu.tree_map(jnp.zeros_like, state.f),
                 state.f,
             )
-            terminate_result = RESULTS.successful
+            # Skip divergence on the first step to avoid inf sentinels from init.
+            diverged = diverged & (state.step > 0)
+            terminate = converged | diverged
+            terminate_result = RESULTS.where(
+                diverged, RESULTS.nonlinear_divergence, RESULTS.successful
+            )
         else:
             # TODO(kidger): perform only one iteration when solving a linear system!
             at_least_two = state.step >= 2

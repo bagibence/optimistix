@@ -15,7 +15,6 @@ from .._custom_types import Aux, DescentState, Fn, HessianUpdateState, SearchSta
 from .._minimise import AbstractMinimiser
 from .._misc import (
     cauchy_termination,
-    check_params_diverged,
     filter_cond,
     lin_to_grad,
     max_norm,
@@ -238,18 +237,20 @@ class AbstractQuasiNewton(
             )
             y_diff = (state.y_eval**ω - y**ω).ω
             f_diff = (f_eval**ω - state.f_info.f**ω).ω
-            terminate = cauchy_termination(
+            converged, diverged = cauchy_termination(
                 self.rtol, self.atol, self.norm, state.y_eval, y_diff, f_eval, f_diff
             )
-            terminate = jnp.where(
-                state.first_step, jnp.array(False), terminate
-            )  # Skip termination on first step
+            converged = jnp.where(
+                state.first_step, jnp.array(False), converged
+            )  # Skip convergence on first step
+            terminate = converged | diverged
             return (
                 state.y_eval,
                 f_eval_info,
                 aux_eval,
                 descent_state,
                 terminate,
+                diverged,
                 hessian_update_state,
             )
 
@@ -260,12 +261,19 @@ class AbstractQuasiNewton(
                 state.aux,
                 descent_state,
                 jnp.array(False),
+                jnp.array(False),
                 state.hessian_update_state,
             )
 
-        y, f_info, aux, descent_state, terminate, hessian_update_state = filter_cond(
-            accept, accepted, rejected, state.descent_state
-        )
+        (
+            y,
+            f_info,
+            aux,
+            descent_state,
+            terminate,
+            diverged,
+            hessian_update_state,
+        ) = filter_cond(accept, accepted, rejected, state.descent_state)
 
         if len(self.verbose) > 0:
             verbose_loss = "loss" in self.verbose
@@ -287,6 +295,7 @@ class AbstractQuasiNewton(
             search_result == RESULTS.successful, descent_result, search_result
         )
 
+        result = RESULTS.where(diverged, RESULTS.nonlinear_divergence, result)
         state = _QuasiNewtonState(
             first_step=jnp.array(False),
             y_eval=y_eval,
@@ -310,11 +319,7 @@ class AbstractQuasiNewton(
         state: _QuasiNewtonState,
         tags: frozenset[object],
     ) -> tuple[Bool[Array, ""], RESULTS]:
-        converged = state.terminate
-        diverged, result = check_params_diverged(y, state.result)
-        terminate = converged | diverged
-
-        return terminate, result
+        return state.terminate, state.result
 
     def postprocess(
         self,

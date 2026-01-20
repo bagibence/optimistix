@@ -21,6 +21,7 @@ class _GoldenSearchState(eqx.Module):
     f_middle: Float[Array, ""]
     first: Bool[Array, ""]
     terminate: Bool[Array, ""]
+    result: RESULTS
 
 
 class GoldenSearch(AbstractMinimiser[Float[Array, ""], Aux, _GoldenSearchState]):
@@ -92,6 +93,7 @@ class GoldenSearch(AbstractMinimiser[Float[Array, ""], Aux, _GoldenSearchState])
             f_middle=f_middle,
             first=jnp.array(True),
             terminate=jnp.array(False),
+            result=RESULTS.successful,
         )
 
     def step(
@@ -115,7 +117,7 @@ class GoldenSearch(AbstractMinimiser[Float[Array, ""], Aux, _GoldenSearchState])
         # since that is always the point closest to the current `y_`.
         y_diff = state.middle - y_
         f_diff = state.f_middle - f
-        terminate = cauchy_termination(
+        converged, diverged = cauchy_termination(
             self.rtol,
             self.atol,
             jnp.abs,
@@ -124,6 +126,8 @@ class GoldenSearch(AbstractMinimiser[Float[Array, ""], Aux, _GoldenSearchState])
             state.f_middle,
             f_diff,
         )
+        terminate = converged | diverged
+        result = RESULTS.where(diverged, RESULTS.nonlinear_divergence, state.result)
 
         # y is either a new candidate minimum point (if the function value at `y_` is
         # lower than elsewhere), or it becomes an outer point, either the lower or the
@@ -143,6 +147,7 @@ class GoldenSearch(AbstractMinimiser[Float[Array, ""], Aux, _GoldenSearchState])
                 f_middle=f,
                 first=jnp.array(False),
                 terminate=terminate,
+                result=result,
             )
 
         def new_outer(state):
@@ -155,6 +160,7 @@ class GoldenSearch(AbstractMinimiser[Float[Array, ""], Aux, _GoldenSearchState])
                 f_middle=state.f_middle,
                 first=jnp.array(False),
                 terminate=terminate,
+                result=result,
             )
 
         new_state = lax.cond(is_min, new_middle, new_outer, state)
@@ -171,7 +177,7 @@ class GoldenSearch(AbstractMinimiser[Float[Array, ""], Aux, _GoldenSearchState])
         state: _GoldenSearchState,
         tags: frozenset[object],
     ) -> tuple[Bool[Array, ""], RESULTS]:
-        return state.terminate, RESULTS.successful
+        return state.terminate, state.result
 
     def postprocess(
         self,

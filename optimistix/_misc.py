@@ -22,7 +22,6 @@ from lineax.internal import (
 )
 
 from ._custom_types import Y
-from ._solution import RESULTS
 
 
 # Make the wrapped function a genuine member of this module.
@@ -292,7 +291,7 @@ def cauchy_termination(
     y_diff: Y,
     f: _F,
     f_diff: _F,
-) -> Bool[Array, ""]:
+) -> tuple[Bool[Array, ""], Bool[Array, ""]]:
     """Terminate if there is a small difference in both `y` space and `f` space, as
     determined by `rtol` and `atol`.
 
@@ -301,30 +300,13 @@ def cauchy_termination(
     """
     y_scale = (atol + rtol * ω(y).call(jnp.abs)).ω
     f_scale = (atol + rtol * ω(f).call(jnp.abs)).ω
-    y_converged = norm((ω(y_diff).call(jnp.abs) / y_scale**ω).ω) < 1
-    f_converged = norm((ω(f_diff).call(jnp.abs) / f_scale**ω).ω) < 1
-    return y_converged & f_converged
-
-
-def check_params_diverged(y: Y, result: RESULTS) -> tuple[Bool[Array, ""], RESULTS]:
-    """Check if y contains non-finite values.
-
-    Returns whether the parameters diverged and the results updated
-    to signal if they did.
-    """
-    diverged = jnp.invert(
-        jax.tree.reduce(
-            jnp.logical_and,
-            jax.tree.map(lambda x: jnp.all(jnp.isfinite(x)), y),
-        )
-    )
-    result = RESULTS.where(
-        diverged,
-        RESULTS.nonlinear_divergence,
-        result,
-    )
-
-    return diverged, result
+    y_diff_norm = norm((ω(y_diff).call(jnp.abs) / y_scale**ω).ω)
+    f_diff_norm = norm((ω(f_diff).call(jnp.abs) / f_scale**ω).ω)
+    diverged = jnp.invert(jnp.isfinite(y_diff_norm) & jnp.isfinite(f_diff_norm))
+    y_converged = y_diff_norm < 1
+    f_converged = f_diff_norm < 1
+    converged = y_converged & f_converged
+    return (converged, diverged)
 
 
 class _JaxprEqual:
